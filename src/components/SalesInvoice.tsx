@@ -653,7 +653,7 @@ export default function SalesInvoice({ currentUser, tamweenCustomer, onClearTamw
   const tamweenValues = [0, 48, 98, 148, 198, 223, 248, 273, 299, 323, 348];
   const tamweenDiscount = tamweenCards.reduce((sum, count) => sum + (tamweenValues[count] || 0), 0);
   // Total = subtotal + tax - discount - tamween (sum) - breadPoints + bonus
-  const total = subtotal + taxAmount - discount - tamweenDiscount - breadPoints + bonus;
+  const total = Math.max(0, subtotal + taxAmount - discount - tamweenDiscount - breadPoints + bonus);
   const remaining = paid > total ? paid - total : total - paid;
 
   useEffect(() => {
