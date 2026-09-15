@@ -239,26 +239,27 @@ export default function PurchaseInvoice({ currentUser }: PurchaseInvoiceProps) {
       setError("الرجاء اختيار المورد أولاً قبل إضافة الأصناف.");
       return;
     }
-    // No supplier_name check - allow adding any product to any supplier
-    const existingIdx = items.findIndex((it) => it.barcode === found.barcode);
-    if (existingIdx > -1) {
-      const updated = [...items];
-      updated[existingIdx].quantity += 1;
-      updated[existingIdx].total = updated[existingIdx].quantity * updated[existingIdx].purchase_price;
-      setItems(updated);
-    } else {
-      const newItem: PurchaseItemInput = {
-        barcode: found.barcode,
-        name: found.name,
-        quantity: 1,
-        unit: found.unit,
-        purchase_price: found.purchase_price,
-        retail_price: found.retail_price,
-        wholesale_price: found.wholesale_price,
-        total: found.purchase_price
-      };
-      setItems([...items, newItem]);
-    }
+    setItems(prev => {
+      const existingIdx = prev.findIndex((it) => it.barcode === found.barcode);
+      if (existingIdx > -1) {
+        const updated = [...prev];
+        updated[existingIdx].quantity += 1;
+        updated[existingIdx].total = updated[existingIdx].quantity * updated[existingIdx].purchase_price;
+        return updated;
+      } else {
+        const newItem: PurchaseItemInput = {
+          barcode: found.barcode,
+          name: found.name,
+          quantity: 1,
+          unit: found.unit,
+          purchase_price: found.purchase_price,
+          retail_price: found.retail_price,
+          wholesale_price: found.wholesale_price,
+          total: found.purchase_price
+        };
+        return [...prev, newItem];
+      }
+    });
   };
 
   const handleReloadStock = async () => {
