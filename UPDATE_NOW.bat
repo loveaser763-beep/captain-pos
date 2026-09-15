@@ -41,7 +41,7 @@ echo.
 echo ============================================
 echo   Update complete!
 echo   - Installer: G:\update_for_client
-echo   - Demo: captain-pos-demo-6be6b.snapdeploy.app
+echo   - Demo: captain-pos-production.up.railway.app
 echo ============================================
 echo.
 echo Press any key to exit...
