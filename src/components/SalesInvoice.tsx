@@ -1607,16 +1607,16 @@ if (true) {
             >
               {/* Receipt Header */}
               <div style={{ textAlign: "center", marginBottom: "8px" }}>
-                <h4 style={{ fontSize: "15px", fontWeight: "900", margin: "0 0 2px 0", color: "#000000" }}>
+                <div style={{ fontSize: "18px", fontWeight: "900", margin: "0 0 2px 0", color: "#000000", letterSpacing: "1px" }}>
                   {printData.marketName || "منظومة الكابتن"}
-                </h4>
+                </div>
                 {printData.marketPhone && (
-                  <p style={{ fontSize: "10px", margin: "0", color: "#444444" }}>
-                    هاتف: {printData.marketPhone}
-                  </p>
+                  <div style={{ fontSize: "10px", margin: "0", color: "#444444" }}>
+                    ☎ {printData.marketPhone}
+                  </div>
                 )}
-                <div style={{ margin: "6px 0 4px 0", padding: "2px 0", borderTop: "1px solid #000000", borderBottom: "1px solid #000000", fontWeight: "bold", fontSize: "11px" }}>
-                  إيصال مبيعات
+                <div style={{ margin: "8px 0", padding: "4px 0", borderTop: "2px solid #000000", borderBottom: "2px solid #000000", fontWeight: "900", fontSize: "12px", letterSpacing: "2px" }}>
+                  ═══ إيصال مبيعات ═══
                 </div>
               </div>
 
@@ -1714,42 +1714,26 @@ if (true) {
 
                 <div style={{
                   display: "flex",
-                  justify: "space-between",
+                  justifyContent: "space-between",
                   backgroundColor: "#000000",
                   color: "#ffffff",
-                  padding: "5px 6px",
+                  padding: "6px 8px",
                   fontWeight: "900",
-                  fontSize: "12px",
-                  marginTop: "4px",
-                  marginBottom: "4px"
+                  fontSize: "13px",
+                  marginTop: "6px",
+                  letterSpacing: "0.5px"
                 }}>
-                  <span>الإجمالي النهائي:</span>
+                  <span>═══ الإجمالي النهائي ═══</span>
                   <span style={{ fontFamily: "monospace" }}>{(printData.total || 0).toFixed(2)} ج.م</span>
                 </div>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", marginTop: "4px" }}>
-                  <span>طريقة الدفع:</span>
-                  <span style={{ fontFamily: "monospace", fontWeight: "bold" }}>
-                    {printData.payment_method === "cash" ? "نقدي" : printData.payment_method === "visa" ? "فيزا" : printData.payment_method === "instapay" ? "إنستاباي" : printData.payment_method === "vodafone" ? "فودافون كاش" : "غير محدد"}
-                  </span>
-                </div>
-                {printData.paid !== undefined && (
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", color: "#333333", marginTop: "2px" }}>
-                    <span>المدفوع:</span>
-                    <span style={{ fontFamily: "monospace" }}>{(printData.paid || 0).toFixed(2)} ج.م</span>
-                  </div>
-                )}
-                {printData.remaining !== undefined && (
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", color: "#333333", marginTop: "2px" }}>
-                    <span>الباقي:</span>
-                    <span style={{ fontFamily: "monospace" }}>{(printData.remaining || 0).toFixed(2)} ج.م</span>
-                  </div>
-                )}
               </div>
 
               {/* Footer */}
-              <div style={{ textAlign: "center", marginTop: "10px", paddingTop: "6px", borderTop: "1px dashed #000000", fontSize: "9px", fontWeight: "bold", color: "#222222" }}>
-                <p style={{ margin: "0 0 2px 0" }}>شكراً لتسوقكم معنا! يسعدنا خدمتكم دائماً.</p>
-                <p style={{ margin: "0", fontSize: "8px", color: "#666666", fontFamily: "monospace" }}>منظومة الكابتن — لهندسة الأرقام وريادة الأعمال</p>
+              <div style={{ textAlign: "center", marginTop: "12px", paddingTop: "8px", borderTop: "2px dashed #000000", fontSize: "9px", fontWeight: "bold", color: "#222222" }}>
+                <p style={{ margin: "0 0 4px 0", fontSize: "10px" }}>شكراً لتسوقكم معنا!</p>
+                <p style={{ margin: "0 0 2px 0", fontSize: "10px" }}>يسعدنا خدمتكم دائماً</p>
+                <p style={{ margin: "0", fontSize: "8px", color: "#666666", fontFamily: "monospace" }}>━━━━━━━━━━━━━━━━━━━━</p>
+                <p style={{ margin: "4px 0 0 0", fontSize: "8px", color: "#666666", fontFamily: "monospace" }}>منظومة الكابتن © 2026</p>
               </div>
             </div>
 

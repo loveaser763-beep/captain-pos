@@ -620,6 +620,28 @@ async function startServer() {
       }
     }
 
+    // Seed Tamween Supplier + Items
+    const tamweenSup = await dbGet("SELECT id FROM suppliers WHERE name = ? AND is_tamween_supplier = 1", ["مخزن التموين"]);
+    if (!tamweenSup) {
+      const supResult = await dbRun("INSERT INTO suppliers (name, phone, address, is_tamween_supplier) VALUES (?, ?, ?, 1)", ["مخزن التموين", "01012345678", "شارع التموين، القاهرة"]);
+      const tamweenItems = [
+        { barcode: "8801000000001", name: "سكر تمويني", purchase_price: 12.35, retail_price: 12.5, wholesale_price: 12.5, quantity: 200, unit: "كيلو", low_stock_limit: 50, category: "تموين" },
+        { barcode: "8801000000002", name: "زيت تمويني 800مل", purchase_price: 29.75, retail_price: 30, wholesale_price: 30, quantity: 100, unit: "زجاجة", low_stock_limit: 20, category: "تموين" },
+        { barcode: "8801000000003", name: "مكرونة تموين 350جم", purchase_price: 8.85, retail_price: 9, wholesale_price: 9, quantity: 150, unit: "كيس", low_stock_limit: 30, category: "تموين" },
+        { barcode: "8801000000004", name: "جبنه تموين 250جم", purchase_price: 13.75, retail_price: 14, wholesale_price: 14, quantity: 120, unit: "علبة", low_stock_limit: 25, category: "تموين" },
+      ];
+      for (const item of tamweenItems) {
+        const existing = await dbGet("SELECT id FROM items WHERE barcode = ?", [item.barcode]);
+        if (!existing) {
+          await dbRun(
+            `INSERT INTO items (barcode, name, purchase_price, retail_price, wholesale_price, quantity, unit, low_stock_limit, category)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [item.barcode, item.name, item.purchase_price, item.retail_price, item.wholesale_price, item.quantity, item.unit, item.low_stock_limit, item.category]
+          );
+        }
+      }
+    }
+
     // Seed 10 Suppliers - DISABLED by owner (keep project data clean)
     const suppliersCount = await dbGet("SELECT COUNT(*) as count FROM suppliers");
     if (false && suppliersCount.count < 5) {
