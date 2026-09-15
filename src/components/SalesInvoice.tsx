@@ -199,6 +199,9 @@ export default function SalesInvoice({ currentUser, tamweenCustomer, onClearTamw
       if (tamweenCustomer.card_value > 0) {
         setTamweenCards([tamweenCustomer.card_value]);
       }
+      if (tamweenCustomer.bread_points > 0) {
+        setBreadPoints(tamweenCustomer.bread_points);
+      }
       if (onClearTamweenCustomer) onClearTamweenCustomer();
     }
   }, [tamweenCustomer]);
