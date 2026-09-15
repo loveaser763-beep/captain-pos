@@ -1,0 +1,13 @@
+node_modules/
+dist/
+release/
+backups/
+uploads/
+database.sqlite
+database.sqlite-shm
+database.sqlite-wal
+*.log
+.env
+public/zesty-data/
+public/jameety-data/
+src/components/jameety/data/

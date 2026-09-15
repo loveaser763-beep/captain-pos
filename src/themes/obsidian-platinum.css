@@ -1,0 +1,29 @@
+/* Obsidian Platinum — فضة + أسود */
+[data-theme="obsidian-platinum"] {
+  --bg-deep: #09090B;
+  --bg-card: #18181B;
+  --bg-card-hover: #27272A;
+  --bg-input: #27272A;
+  --bg-sidebar: #0C0C0E;
+  --text-primary: #FAFAFA;
+  --text-secondary: #A1A1AA;
+  --text-muted: #71717A;
+  --accent: #E4E4E7;
+  --accent-hover: #F4F4F5;
+  --accent-glow: rgba(228,228,231,0.2);
+  --accent-subtle: rgba(228,228,231,0.06);
+  --primary: #A1A1AA;
+  --success: #22C55E;
+  --warning: #FCD34D;
+  --danger: #F43F5E;
+  --border: rgba(228,228,231,0.12);
+  --border-strong: rgba(228,228,231,0.25);
+  --shadow: 0 8px 32px rgba(0,0,0,0.7);
+  --shadow-sm: 0 4px 16px rgba(0,0,0,0.5);
+  --shadow-glow: 0 0 20px rgba(228,228,231,0.08);
+  --radius: 16px;
+  --radius-sm: 10px;
+  --gradient-card: linear-gradient(160deg, rgba(24,24,27,0.8), rgba(9,9,11,0.95));
+  --gradient-accent: linear-gradient(135deg, #E4E4E7, #FAFAFA);
+  --gradient-header: linear-gradient(90deg, #09090B, #18181B);
+}

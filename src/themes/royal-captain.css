@@ -1,0 +1,29 @@
+/* Royal Captain — ذهبي + كحلي فخم */
+[data-theme="royal-captain"] {
+  --bg-deep: #0B1120;
+  --bg-card: #111827;
+  --bg-card-hover: #1A2332;
+  --bg-input: #1E293B;
+  --bg-sidebar: #0D1526;
+  --text-primary: #E8ECF4;
+  --text-secondary: #8B95A8;
+  --text-muted: #5A6577;
+  --accent: #C9A84C;
+  --accent-hover: #D4B65E;
+  --accent-glow: rgba(201,168,76,0.25);
+  --accent-subtle: rgba(201,168,76,0.08);
+  --primary: #2563EB;
+  --success: #10B981;
+  --warning: #F59E0B;
+  --danger: #EF4444;
+  --border: rgba(201,168,76,0.15);
+  --border-strong: rgba(201,168,76,0.3);
+  --shadow: 0 8px 32px rgba(0,0,0,0.4);
+  --shadow-sm: 0 4px 16px rgba(0,0,0,0.3);
+  --shadow-glow: 0 0 20px rgba(201,168,76,0.15);
+  --radius: 16px;
+  --radius-sm: 10px;
+  --gradient-card: linear-gradient(160deg, rgba(26,35,50,0.8), rgba(11,17,32,0.95));
+  --gradient-accent: linear-gradient(135deg, #C9A84C, #D4B65E);
+  --gradient-header: linear-gradient(90deg, #0B1120, #111827);
+}

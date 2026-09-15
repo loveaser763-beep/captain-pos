@@ -1,0 +1,173 @@
+import { useState, useEffect } from "react";
+import { User } from "./types";
+import Sidebar from "./components/Sidebar";
+import Login from "./components/Login";
+import Dashboard from "./components/Dashboard";
+import Products from "./components/Products";
+import Suppliers from "./components/Suppliers";
+import SalesInvoice from "./components/SalesInvoice";
+import PurchaseInvoice from "./components/PurchaseInvoice";
+import Reports from "./components/Reports";
+import UsersManagement from "./components/Users";
+import Logs from "./components/Logs";
+import Settings from "./components/Settings";
+import Treasury from "./components/Treasury";
+import InventoryAudit from "./components/InventoryAudit";
+import DeveloperPanel from "./components/DeveloperPanel";
+import Jameety from "./components/Jameety";
+import { Menu } from "lucide-react";
+
+import InvoicesRegister from "./components/InvoicesRegister";
+
+export default function App() {
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [activeTab, setActiveTab] = useState("dashboard");
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  // Load user session on startup if saved locally
+  useEffect(() => {
+    const saved = localStorage.getItem("supermarket_user_session");
+    if (saved) {
+      try {
+        setCurrentUser(JSON.parse(saved));
+      } catch (err) {
+        localStorage.removeItem("supermarket_user_session");
+      }
+    }
+  }, []);
+
+  const handleLoginSuccess = (user: User) => {
+    setCurrentUser(user);
+    localStorage.setItem("supermarket_user_session", JSON.stringify(user));
+    
+    // Automatically route users based on primary roles
+    if (user.role === "admin" || user.role === "developer") {
+      setActiveTab("dashboard");
+    } else if (user.role === "cashier" || user.permissions?.includes("sales")) {
+      setActiveTab("sales");
+    } else if (user.role === "storekeeper" || user.permissions?.includes("items")) {
+      setActiveTab("items");
+    } else {
+      setActiveTab("dashboard");
+    }
+  };
+
+  const handleLogout = () => {
+    setCurrentUser(null);
+    localStorage.removeItem("supermarket_user_session");
+    setActiveTab("dashboard");
+  };
+
+  // Switch Sub-views
+  const renderActiveView = () => {
+    switch (activeTab) {
+      case "dashboard":
+        return <Dashboard currentUser={currentUser} onNavigateToTab={(tab) => setActiveTab(tab)} />;
+      case "sales":
+        return <SalesInvoice currentUser={currentUser} />;
+      case "purchases":
+        return <PurchaseInvoice currentUser={currentUser} />;
+      case "invoices_register":
+        return <InvoicesRegister currentUser={currentUser} />;
+      case "items":
+        return <Products currentUser={currentUser} />;
+      case "inventory_audit":
+        return <InventoryAudit currentUser={currentUser} />;
+      case "suppliers":
+        return <Suppliers currentUser={currentUser} />;
+      case "reports":
+        return <Reports currentUser={currentUser} />;
+      case "users":
+        return <UsersManagement currentUser={currentUser} />;
+      case "logs":
+        return <Logs currentUser={currentUser} />;
+      case "settings":
+        return <Settings currentUser={currentUser} />;
+      case "treasury":
+        return <Treasury currentUser={currentUser} />;
+      case "developer":
+case "developer":
+        return <DeveloperPanel currentUser={currentUser} />;
+      case "jameety":
+        return <Jameety />;
+        return <DeveloperPanel currentUser={currentUser} />;
+      default:
+        return <Dashboard currentUser={currentUser} onNavigateToTab={(tab) => setActiveTab(tab)} />;
+    }
+  };
+
+  // If session is unauthenticated, load login UI screen
+  if (!currentUser) {
+    return <Login onLoginSuccess={handleLoginSuccess} />;
+  }
+
+  return (
+    <div
+      className="flex h-dvh w-full max-w-full min-w-0 bg-[#b2b7af] text-[#222222] overflow-hidden font-sans select-none"
+      id="app-container"
+      style={{ direction: "rtl" }}
+    >
+      {/* Mobile Menu Overlay */}
+      {isMobileMenuOpen && (
+        <div
+          className="fixed inset-0 bg-[#000000]/60 z-40 md:hidden transition-opacity"
+          onClick={() => setIsMobileMenuOpen(false)}
+        />
+      )}
+
+      {/* Sidebar Panel - Primary Structural Division */}
+      <div
+        className={`fixed inset-y-0 right-0 z-50 w-[85vw] max-w-[270px] sm:w-64 transform transition-transform duration-200 ease-in-out ${isMobileMenuOpen ? "translate-x-0" : "translate-x-full"} flex flex-col shrink-0 border-l border-[#222222] bg-[#c3c6bb]`}
+        id="app-sidebar-panel"
+      >
+        <Sidebar
+          activeTab={activeTab}
+          setActiveTab={(tab) => {
+            setActiveTab(tab);
+            setIsMobileMenuOpen(false);
+          }}
+          currentUser={currentUser}
+          onLogout={handleLogout}
+        />
+      </div>
+
+      {/* Main Content Viewport */}
+      <div className="flex-1 flex flex-col h-full min-w-0 max-w-full overflow-hidden bg-[#b2b7af]" id="app-main-viewport">
+        
+        {/* Top Control Bar - Structural Header */}
+        <div className="bg-[#c3c6bb] min-h-11 py-1.5 px-2.5 sm:px-4 md:px-6 flex justify-between items-center border-b border-[#222222] shrink-0 z-30 min-w-0 flex-wrap gap-1" id="top-enterprise-bar">
+          <div className="flex items-center gap-1.5 sm:gap-3 min-w-0">
+            <button 
+              onClick={() => setIsMobileMenuOpen(true)}
+              className="p-1 md:hidden text-[#222222] hover:bg-[#b8bcb2] transition-colors cursor-pointer shrink-0"
+              aria-label="القائمة الجانبية"
+            >
+              <Menu size={18} strokeWidth={1.5} />
+            </button>
+            <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 truncate">
+              <span className="text-xs font-black text-[#000000] truncate">إينوكود الرقمية</span>
+              <span className="text-[11px] text-[#555555] font-semibold hidden sm:inline truncate">| المنظومة المحاسبية والإدارية</span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 sm:gap-4 text-xs text-[#444444] font-medium shrink-0">
+            <div className="hidden lg:flex items-center gap-3">
+              <span>المستخدم: <strong className="text-[#000000]">{currentUser.name}</strong></span>
+              <span>|</span>
+              <span>الصلاحية: <strong className="text-[#000000]">{currentUser.role === "developer" ? "مبرمج النظام (InnoCode)" : currentUser.role === "admin" ? "مدير النظام" : currentUser.role === "cashier" ? "الكاشير" : "المخزن"}</strong></span>
+            </div>
+            <div className="flex items-center gap-1 sm:gap-1.5 text-xs font-bold text-[#000000]">
+              <span className="w-2 h-2 bg-[#222222] inline-block shrink-0"></span>
+              <span className="hidden min-[300px]:inline">نشط</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Dynamic Target Viewport */}
+        <div className="flex-1 min-h-0 min-w-0 max-w-full overflow-y-auto flex flex-col w-full relative p-2 sm:p-4 md:p-6 lg:p-8" id="app-viewport-inner">
+          {renderActiveView()}
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,573 @@
+/* ==========================================================================
+   LUXURY ENTERPRISE DESIGN SYSTEM — Theme-Driven
+   All colors come from [data-theme] CSS variables
+   ========================================================================== */
+
+:root {
+  /* Default fallbacks (Royal Captain) */
+  --lux-obsidian-950: #0B1120;
+  --lux-obsidian-900: #0D1526;
+  --lux-obsidian-850: #0B1120;
+  --lux-obsidian-800: #111827;
+  --lux-obsidian-700: #1A2332;
+  --lux-obsidian-600: #24365a;
+  --lux-platinum-50: #E8ECF4;
+  --lux-platinum-100: #E8ECF4;
+  --lux-platinum-200: #c8d2e4;
+  --lux-platinum-300: #8B95A8;
+  --lux-platinum-400: #8B95A8;
+  --lux-platinum-500: #5A6577;
+  --lux-gold-300: #C9A84C;
+  --lux-gold-400: #C9A84C;
+  --lux-gold-500: #C9A84C;
+  --lux-gold-600: #a8832f;
+  --lux-emerald: #10B981;
+  --lux-rose: #EF4444;
+  --lux-cyan: #3B82F6;
+  --lux-amber: #F59E0B;
+  --lux-card: linear-gradient(160deg, rgba(26,35,50,0.8), rgba(11,17,32,0.95));
+  --lux-card-solid: #111827;
+  --lux-line: rgba(201,168,76,0.15);
+  --lux-line-strong: rgba(201,168,76,0.3);
+  --lux-shadow-card: 0 10px 28px -12px rgba(0,0,0,0.65), 0 2px 6px -2px rgba(0,0,0,0.5);
+  --lux-shadow-btn: 0 6px 16px -8px rgba(0,0,0,0.7), inset 0 1px 0 rgba(255,255,255,0.14);
+  --lux-shadow-btn-pressed: 0 2px 6px -2px rgba(0,0,0,0.7), inset 0 2px 5px rgba(0,0,0,0.35);
+  --lux-radius: 16px;
+  --lux-radius-sm: 10px;
+}
+
+/* Override lux vars from theme vars */
+[data-theme] {
+  --lux-obsidian-950: var(--bg-deep);
+  --lux-obsidian-900: var(--bg-sidebar);
+  --lux-obsidian-850: var(--bg-deep);
+  --lux-obsidian-800: var(--bg-card);
+  --lux-obsidian-700: var(--bg-card-hover);
+  --lux-platinum-50: var(--text-primary);
+  --lux-platinum-100: var(--text-primary);
+  --lux-platinum-200: var(--text-primary);
+  --lux-platinum-300: var(--text-secondary);
+  --lux-platinum-400: var(--text-secondary);
+  --lux-platinum-500: var(--text-muted);
+  --lux-gold-300: var(--accent);
+  --lux-gold-400: var(--accent);
+  --lux-gold-500: var(--accent);
+  --lux-emerald: var(--success);
+  --lux-rose: var(--danger);
+  --lux-amber: var(--warning);
+  --lux-card: var(--gradient-card);
+  --lux-card-solid: var(--bg-card);
+  --lux-line: var(--border);
+  --lux-line-strong: var(--border-strong);
+  --lux-shadow-card: var(--shadow);
+  --lux-shadow-btn: var(--shadow-sm);
+}
+
+/* ============================ FONT SCALE - تكبير عام لكل البرنامج ============================ */
+html { font-size: 16.5px; }
+.lux-scope { font-size: 0.95rem; }
+
+/* ============================ SCOPE ============================ */
+.lux-scope {
+  background: var(--bg-deep, #0B1120);
+  color: var(--text-primary, #E8ECF4);
+  min-height: 100%;
+}
+
+/* ---- Absolute Contrast Enforcement: WCAG AA+ ---- */
+.lux-scope .text-slate-400 { color: var(--text-secondary, #8B95A8) !important; }
+.lux-scope .text-slate-500 { color: var(--text-secondary, #8B95A8) !important; }
+.lux-scope .text-slate-600 { color: var(--text-muted, #5A6577) !important; }
+.lux-scope .text-gray-400 { color: var(--text-secondary, #8B95A8) !important; }
+.lux-scope .text-gray-500 { color: var(--text-secondary, #8B95A8) !important; }
+.lux-scope .text-slate-700 { color: var(--text-muted, #5A6577) !important; }
+.lux-scope .text-slate-800 { color: var(--text-muted, #5A6577) !important; }
+.lux-scope .text-slate-900 { color: var(--text-primary, #E8ECF4) !important; }
+
+/* ============================ FLOATING GLASS CARDS ============================ */
+.lux-glass {
+  background: var(--gradient-card, linear-gradient(160deg, rgba(26,35,50,0.8), rgba(11,17,32,0.95)));
+  border: 1px solid var(--border, rgba(201,168,76,0.15));
+  border-radius: var(--radius, 16px);
+  box-shadow: var(--shadow, 0 8px 32px rgba(0,0,0,0.4));
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+.lux-glass-flat {
+  background: var(--bg-card, #111827);
+  border: 1px solid var(--border, rgba(201,168,76,0.15));
+  border-radius: var(--radius, 16px);
+  box-shadow: var(--shadow, 0 8px 32px rgba(0,0,0,0.4));
+}
+.lux-glass-head {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.8rem 1.1rem;
+  border-bottom: 1px solid var(--border, rgba(201,168,76,0.15));
+}
+.lux-glass-title {
+  font-weight: 800;
+  font-size: 0.95rem;
+  color: var(--accent, #C9A84C);
+  letter-spacing: 0.1px;
+}
+.lux-glass-sub {
+  font-size: 0.80rem;
+  color: var(--text-secondary, #8B95A8);
+  font-weight: 600;
+}
+
+/* ---- KPI card ---- */
+.lux-kpi { position: relative; overflow: hidden; }
+.lux-kpi::before {
+  content: "";
+  position: absolute;
+  top: 0; right: 12%; left: 12%;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent, #C9A84C), transparent);
+  opacity: 0.85;
+}
+
+/* ============================ METALLIC TEXT ============================ */
+.lux-metallic {
+  background: linear-gradient(100deg, #f6e7bd 5%, var(--accent, #C9A84C) 38%, #fff6dd 50%, var(--accent, #C9A84C) 62%, #f6e7bd 95%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent !important;
+  font-weight: 900;
+}
+.lux-platinum-text { color: var(--text-primary, #E8ECF4) !important; }
+
+/* ============================ TACTILE BUTTONS ============================ */
+.lux-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  font-weight: 800;
+  font-size: 0.82rem;
+  padding: 0.60rem 1rem;
+  border-radius: var(--radius-sm, 10px);
+  border: 1px solid var(--border-strong, rgba(201,168,76,0.3));
+  background: linear-gradient(180deg, var(--bg-card-hover, #1A2332), var(--bg-card, #111827));
+  color: var(--text-primary, #E8ECF4);
+  box-shadow: var(--shadow-sm, 0 4px 16px rgba(0,0,0,0.3));
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.15s ease;
+  user-select: none;
+  white-space: nowrap;
+}
+.lux-btn:hover { filter: brightness(1.14); }
+.lux-btn:active { transform: translateY(1px); box-shadow: var(--shadow-sm); }
+.lux-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+.lux-btn-primary {
+  background: var(--gradient-accent, linear-gradient(135deg, #C9A84C, #D4B65E));
+  border-color: var(--border-strong, rgba(201,168,76,0.3));
+  color: #0B1120;
+  text-shadow: 0 1px 0 rgba(255,255,255,0.35);
+}
+.lux-btn-emerald {
+  background: linear-gradient(180deg, var(--success, #10B981), #125239);
+  border-color: rgba(16,185,129,0.4);
+  color: #eafff5;
+}
+.lux-btn-rose {
+  background: linear-gradient(180deg, var(--danger, #EF4444), #5c1428);
+  border-color: rgba(239,68,68,0.4);
+  color: #fff0f3;
+}
+.lux-btn-ghost {
+  background: var(--accent-subtle, rgba(201,168,76,0.08));
+  box-shadow: none;
+}
+.lux-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 10px;
+  border: 1px solid var(--border, rgba(201,168,76,0.15));
+  background: var(--accent-subtle, rgba(201,168,76,0.08));
+  color: var(--text-secondary, #8B95A8);
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.12s ease;
+}
+.lux-icon-btn:hover { background: var(--accent-subtle, rgba(201,168,76,0.08)); filter: brightness(1.2); }
+.lux-icon-btn:active { transform: translateY(1px); }
+
+/* ============================ TACTILE FIELDS ============================ */
+.lux-input, .lux-select {
+  background: var(--bg-input, #1E293B);
+  border: 1px solid var(--border-strong, rgba(201,168,76,0.3));
+  border-radius: var(--radius-sm, 10px);
+  color: var(--text-primary, #E8ECF4);
+  font-weight: 700;
+  font-size: 0.85rem;
+  padding: 0.55rem 0.75rem;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  box-shadow: inset 0 2px 6px rgba(0,0,0,0.45);
+  max-width: 100%;
+}
+.lux-input::placeholder { color: var(--text-muted, #5A6577); font-weight: 600; }
+.lux-input:focus, .lux-select:focus {
+  border-color: var(--accent, #C9A84C);
+  box-shadow: inset 0 2px 6px rgba(0,0,0,0.45), 0 0 0 2px var(--accent-glow, rgba(201,168,76,0.25));
+}
+.lux-select option { background: var(--bg-card, #111827); color: var(--text-primary, #E8ECF4); }
+.lux-label {
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 800;
+  color: var(--text-secondary, #8B95A8);
+  margin-bottom: 0.3rem;
+}
+
+/* ============================ TAB PILLS ============================ */
+.lux-pills {
+  display: flex;
+  gap: 0.35rem;
+  padding: 0.3rem;
+  border-radius: 14px;
+  background: var(--bg-input, rgba(5,8,14,0.55));
+  border: 1px solid var(--border, rgba(201,168,76,0.15));
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.lux-pills::-webkit-scrollbar { display: none; }
+.lux-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.50rem 0.8rem;
+  border-radius: 10px;
+  font-size: 0.80rem;
+  font-weight: 800;
+  color: var(--text-secondary, #8B95A8);
+  border: 1px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.16s ease;
+}
+.lux-pill:hover { color: var(--text-primary, #E8ECF4); background: var(--accent-subtle, rgba(201,168,76,0.08)); }
+.lux-pill[data-active="true"] {
+  color: #0B1120;
+  background: var(--gradient-accent, linear-gradient(135deg, #C9A84C, #D4B65E));
+  border-color: var(--border-strong, rgba(201,168,76,0.3));
+  box-shadow: var(--shadow-sm);
+}
+
+/* ============================ COMMAND BAR ============================ */
+.lux-commandbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  background: var(--gradient-header, linear-gradient(90deg, #0B1120, #111827));
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border-bottom: 1px solid var(--border-strong, rgba(201,168,76,0.3));
+  box-shadow: 0 12px 30px -18px rgba(0,0,0,0.8);
+}
+
+/* ============================ ENTITY SWITCH ============================ */
+.lux-entity-switch {
+  display: flex;
+  padding: 0.25rem;
+  gap: 0.25rem;
+  border-radius: 12px;
+  background: var(--bg-input, rgba(5,8,14,0.6));
+  border: 1px solid var(--border-strong, rgba(201,168,76,0.3));
+}
+.lux-entity-stack { flex-direction: column; align-items: stretch; min-width: 130px; }
+.lux-entity-stack .lux-entity-btn { justify-content: flex-start; }
+.lux-entity-btn {
+  padding: 0.45rem 0.8rem;
+  border-radius: 9px;
+  font-size: 0.80rem;
+  font-weight: 900;
+  color: var(--text-secondary, #8B95A8);
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.16s ease;
+  white-space: nowrap;
+}
+.lux-entity-btn[data-active="true"] {
+  background: linear-gradient(180deg, var(--bg-card-hover, #1A2332), var(--bg-card, #111827));
+  color: var(--text-primary, #E8ECF4);
+  border-color: var(--accent, #C9A84C);
+  box-shadow: var(--shadow-sm);
+}
+
+/* ============================ DRAWERS ============================ */
+.lux-drawer { overflow: hidden; }
+.lux-drawer-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.6rem 0.85rem;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  color: inherit;
+  text-align: inherit;
+}
+.lux-drawer-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.lux-drawer[data-open="true"] .lux-drawer-body { grid-template-rows: 1fr; }
+.lux-drawer-inner { overflow: hidden; min-height: 0; }
+.lux-drawer-chev { transition: transform 0.3s ease; }
+.lux-drawer[data-open="true"] .lux-drawer-chev { transform: rotate(180deg); }
+
+/* ============================ TABLES ============================ */
+.lux-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+.lux-table thead th {
+  background: var(--gradient-header, linear-gradient(90deg, #0B1120, #111827));
+  color: var(--accent, #C9A84C);
+  font-weight: 800;
+  font-size: 0.78rem;
+  padding: 0.60rem 0.70rem;
+  border-bottom: 1px solid var(--border-strong, rgba(201,168,76,0.3));
+  white-space: nowrap;
+}
+.lux-table tbody td {
+  padding: 0.60rem 0.70rem;
+  border-bottom: 1px solid var(--border, rgba(201,168,76,0.15));
+  color: var(--text-primary, #E8ECF4);
+  font-weight: 600;
+  vertical-align: middle;
+}
+.lux-table tbody tr { transition: background 0.13s ease; }
+.lux-table tbody tr:hover { background: var(--accent-subtle, rgba(201,168,76,0.08)); }
+
+/* ---- Chips ---- */
+.lux-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.22rem 0.65rem;
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 800;
+  border: 1px solid var(--border-strong, rgba(201,168,76,0.3));
+  background: var(--accent-subtle, rgba(201,168,76,0.08));
+  color: var(--text-primary, #E8ECF4);
+  white-space: nowrap;
+}
+.lux-chip-emerald { background: rgba(16,185,129,0.13); border-color: rgba(16,185,129,0.45); color: #6EE7B7; }
+.lux-chip-rose { background: rgba(239,68,68,0.13); border-color: rgba(239,68,68,0.45); color: #FCA5A5; }
+.lux-chip-gold { background: var(--accent-subtle, rgba(201,168,76,0.14)); border-color: var(--border-strong, rgba(201,168,76,0.5)); color: var(--accent, #C9A84C); }
+.lux-chip-cyan { background: rgba(59,130,246,0.12); border-color: rgba(59,130,246,0.45); color: #93C5FD; }
+
+/* ============================ NUMBERS ============================ */
+.lux-num { font-variant-numeric: tabular-nums; font-weight: 800; color: var(--text-primary, #E8ECF4); }
+.lux-num-emerald { color: var(--success, #10B981); }
+.lux-num-rose { color: var(--danger, #EF4444); }
+.lux-num-gold { color: var(--accent, #C9A84C); }
+
+/* ============================ SCROLLBARS ============================ */
+.lux-scroll { scrollbar-width: thin; scrollbar-color: var(--border-strong, rgba(201,168,76,0.3)) transparent; }
+.lux-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+.lux-scroll::-webkit-scrollbar-track { background: transparent; }
+.lux-scroll::-webkit-scrollbar-thumb {
+  background: var(--border-strong, rgba(201,168,76,0.3));
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+/* ============================ STAGE (tab bodies) ============================ */
+.lux-stage {
+  background: var(--bg-card, #111827);
+  border: 1px solid var(--border, rgba(201,168,76,0.15));
+  border-radius: var(--radius, 16px);
+  padding: 0.85rem;
+  box-shadow: var(--shadow, 0 8px 32px rgba(0,0,0,0.4));
+}
+.lux-stage .bg-white {
+  background-color: var(--bg-card, #111827);
+  border-color: var(--border, rgba(201,168,76,0.15));
+  box-shadow: var(--shadow-sm);
+  border-radius: var(--radius, 16px);
+}
+.lux-stage thead.bg-slate-50 {
+  background: var(--gradient-header, linear-gradient(90deg, #0B1120, #111827));
+}
+.lux-stage thead th { color: var(--accent, #C9A84C) !important; }
+.lux-stage button { transition: transform 0.12s ease, filter 0.15s ease; }
+.lux-stage button:active { transform: translateY(1px); }
+.lux-stage input:focus, .lux-stage select:focus {
+  border-color: var(--accent, #C9A84C) !important;
+  box-shadow: 0 0 0 2px var(--accent-glow, rgba(201,168,76,0.25));
+  outline: none;
+}
+
+/* ============================ DIVIDERS ============================ */
+.lux-divider { height: 1px; background: linear-gradient(90deg, transparent, var(--border-strong, rgba(201,168,76,0.3)), transparent); }
+.lux-section-gap > * + * { margin-top: 0.9rem; }
+
+/* ============================ TRANSITIONS ============================ */
+* { transition-property: color, background-color, border-color, box-shadow, opacity;
+    transition-duration: 0.18s;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1); }
+button, a, [role="button"] { transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1); }
+button:active { transform: scale(0.98); }
+input, select, textarea { transition: border-color 0.18s ease, box-shadow 0.18s ease; }
+
+/* ============================ GLOBAL OVERRIDES ============================ */
+/* Unlayered CSS always beats Tailwind v4 layered utilities */
+.bg-white, .bg-white\/20, .bg-white\/60, .bg-white\/80,
+.bg-gray-50, .bg-slate-50,
+.bg-gray-100, .bg-slate-100,
+.bg-gray-200, .bg-slate-200,
+.bg-gray-300, .bg-slate-300 { background-color: var(--bg-card, #111827) !important; }
+
+.bg-slate-50\/60, .bg-slate-50\/80 { background-color: rgba(17,24,39,0.6) !important; }
+
+.text-gray-900, .text-slate-900,
+.text-gray-800, .text-slate-800 { color: var(--text-primary, #E8ECF4) !important; }
+.text-gray-700, .text-slate-700 { color: var(--text-secondary, #8B95A8) !important; }
+.text-gray-600, .text-slate-600 { color: var(--text-muted, #5A6577) !important; }
+.text-gray-500, .text-slate-500 { color: var(--text-secondary, #8B95A8) !important; }
+.text-gray-400, .text-slate-400 { color: var(--text-secondary, #8B95A8) !important; }
+.text-black { color: var(--text-primary, #E8ECF4) !important; }
+
+.border-gray-100, .border-slate-100,
+.border-gray-200, .border-slate-200 { border-color: var(--border, rgba(201,168,76,0.15)) !important; }
+.border-gray-300, .border-slate-300 { border-color: var(--border-strong, rgba(201,168,76,0.3)) !important; }
+
+.divide-gray-100 > :not([hidden]) ~ :not([hidden]),
+.divide-gray-200 > :not([hidden]) ~ :not([hidden]),
+.divide-slate-100 > :not([hidden]) ~ :not([hidden]),
+.divide-slate-200 > :not([hidden]) ~ :not([hidden]) { border-color: var(--border, rgba(201,168,76,0.15)) !important; }
+
+input:not([type="file"]):not([type="color"]), select, textarea {
+  background-color: var(--bg-input, #1E293B) !important;
+  color: var(--text-primary, #E8ECF4) !important;
+  border-color: var(--border-strong, rgba(201,168,76,0.3)) !important;
+}
+input:not([type="file"]):not([type="color"]):focus, select:focus, textarea:focus {
+  border-color: var(--accent, #C9A84C) !important;
+  box-shadow: 0 0 0 2px var(--accent-glow, rgba(201,168,76,0.25)) !important;
+}
+
+table { color: var(--text-primary, #E8ECF4) !important; }
+thead { background: var(--gradient-header) !important; }
+th { color: var(--accent, #C9A84C) !important; }
+td { border-color: var(--border, rgba(201,168,76,0.15)) !important; color: var(--text-primary, #E8ECF4) !important; }
+tr { border-color: var(--border, rgba(201,168,76,0.15)) !important; }
+tbody tr:hover { background: var(--accent-subtle, rgba(201,168,76,0.08)) !important; }
+
+.shadow-sm { box-shadow: var(--shadow-sm, 0 4px 16px rgba(0,0,0,0.3)) !important; }
+.shadow { box-shadow: var(--shadow, 0 8px 32px rgba(0,0,0,0.4)) !important; }
+.shadow-md { box-shadow: var(--shadow, 0 8px 32px rgba(0,0,0,0.4)) !important; }
+.shadow-lg { box-shadow: var(--shadow, 0 8px 32px rgba(0,0,0,0.4)) !important; }
+.shadow-2xl { box-shadow: var(--shadow, 0 8px 32px rgba(0,0,0,0.4)) !important; }
+.shadow-xl { box-shadow: var(--shadow, 0 8px 32px rgba(0,0,0,0.4)) !important; }
+
+.ring-gray-300, .ring-slate-300 { --tw-ring-color: var(--border-strong, rgba(201,168,76,0.3)) !important; }
+.ring-emerald-100 { --tw-ring-color: rgba(16,185,129,0.25) !important; }
+.ring-orange-100 { --tw-ring-color: rgba(201,168,76,0.25) !important; }
+
+/* ============================ FONT SCALE OVERRIDES - Tailwind ============================ */
+.text-\[9px\] { font-size: 11px !important; }
+.text-\[10px\] { font-size: 12px !important; }
+.text-\[11px\] { font-size: 13px !important; }
+.text-xs { font-size: 0.85rem !important; }
+.text-sm { font-size: 0.95rem !important; }
+.text-base { font-size: 1.05rem !important; }
+
+/* ============================ HOVER ANIMATIONS - وميض وتكبير للمفاتيح ============================ */
+@keyframes lux-flash {
+  0% { filter: brightness(1); }
+  50% { filter: brightness(1.35); }
+  100% { filter: brightness(1); }
+}
+@keyframes lux-pulse-glow {
+  0% { box-shadow: 0 0 0 0 var(--accent-glow); }
+  70% { box-shadow: 0 0 0 8px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.lux-btn:hover, .lux-pill:hover, .lux-entity-btn:hover {
+  transform: scale(1.03);
+  filter: brightness(1.12);
+}
+.lux-btn:active, .lux-pill:active { transform: scale(0.97); }
+/* مفاتيح السايد بار */
+#sidebar-nav button:hover {
+  transform: scale(1.02) translateX(-2px);
+  filter: brightness(1.15);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+  animation: lux-flash 0.4s ease;
+}
+#sidebar-nav button:active { transform: scale(0.98); }
+/* كروت KPI */
+#dashboard-kpis > div:hover {
+  transform: scale(1.02);
+  filter: brightness(1.08);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+}
+/* مفاتيح الكاشير المهمة */
+#cashier-root-container button:hover {
+  transform: scale(1.02);
+  filter: brightness(1.1);
+}
+
+/* ============================ POS LEGACY THEME BRIDGE ============================ */
+/* يوحّد الكاشير والداشبورد مع الثيمات - أي لون قديم فاتح يتحول لمتغيرات الثيم */
+[class*="bg-[#c3c6bb]"] { background-color: var(--bg-card) !important; }
+[class*="bg-[#b8bcb2]"] { background-color: var(--bg-input) !important; }
+[class*="bg-[#d3d3d3]"] { background-color: var(--bg-input) !important; opacity: 0.6; }
+[class*="bg-[#222222]"] { background-color: var(--bg-deep) !important; }
+[class*="bg-[#000000]"] { background-color: var(--bg-deep) !important; }
+[class*="hover:bg-[#b8bcb2]"]:hover { background-color: var(--bg-card-hover) !important; }
+[class*="hover:bg-[#c3c6bb]"]:hover { background-color: var(--bg-card-hover) !important; }
+[class*="hover:bg-[#222222]"]:hover { background-color: var(--bg-card) !important; }
+[class*="hover:bg-[#000000]"]:hover { background-color: var(--bg-card-hover) !important; }
+[class*="hover:text-[#c3c6bb]"]:hover { color: var(--text-primary) !important; }
+[class*="hover:text-[#ffffff]"]:hover { color: var(--text-primary) !important; }
+
+[class*="text-[#000000]"] { color: var(--text-primary) !important; }
+[class*="text-[#222222]"] { color: var(--text-primary) !important; }
+[class*="text-[#555555]"] { color: var(--text-secondary) !important; }
+[class*="text-[#888888]"] { color: var(--text-muted) !important; }
+[class*="text-[#c3c6bb]"] { color: var(--text-primary) !important; }
+[class*="text-[#b8bcb2]"] { color: var(--text-secondary) !important; }
+
+[class*="border-[#222222]"] { border-color: var(--border-strong) !important; }
+[class*="border-[#888888]"] { border-color: var(--border) !important; }
+[class*="border-[#aaaaaa]"] { border-color: var(--border) !important; }
+[class*="border-[#444444]"] { border-color: var(--border) !important; }
+[class*="border-[#333333]"] { border-color: var(--border) !important; }
+[class*="divide-[#888888]"] > :not([hidden]) ~ :not([hidden]) { border-color: var(--border) !important; }
+[class*="divide-[#888888]/40"] > :not([hidden]) ~ :not([hidden]) { border-color: var(--border) !important; }
+
+/* إصلاح حقول الكاشير لتتبع lux-input */
+[class*="bg-[#b8bcb2]"][class*="border-[#888888]"] { border-color: var(--border-strong) !important; }
+
+/* ---- print ---- */
+@media print {
+  #app-sidebar-panel, #top-enterprise-bar, .lux-commandbar, .lux-pills, .no-print { display: none !important; }
+  body, html { background: #fff !important; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+  #app-container, #app-main-viewport, #app-viewport-inner { display: block !important; height: auto !important; min-height: auto !important; overflow: visible !important; flex: none !important; }
+  .lux-stage.printable-closing { display: block !important; width: 190mm !important; max-width: 190mm !important; margin: 0 auto !important; padding: 1mm !important; background: #fff !important; height: auto !important; min-height: auto !important; overflow: visible !important; border: none !important; box-shadow: none !important; }
+  .lux-drawer, .lux-drawer[data-open], .lux-drawer[data-open="false"], .lux-drawer-body, .lux-drawer-inner { display: block !important; max-height: none !important; height: auto !important; overflow: visible !important; visibility: visible !important; opacity: 1 !important; }
+  .printable-closing, .printable-closing * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; background: #fff !important; background-image: none !important; background-color: #fff !important; color: #000 !important; border-color: #000 !important; box-shadow: none !important; filter: none !important; }
+  .printable-closing .bg-white { background: #fff !important; border: 1px solid #000 !important; }
+  .printable-closing .grid { grid-template-columns: 1fr !important; gap: 1mm !important; break-inside: avoid !important; page-break-inside: avoid !important; }
+  .printable-closing .p-3, .printable-closing .p-4 { padding: 1.5mm !important; }
+  .printable-closing h3 { font-size: 9pt !important; line-height: 1.1 !important; }
+  .printable-closing p { font-size: 6pt !important; line-height: 1.1 !important; }
+  .printable-closing [inert] { display: block !important; }
+  .printable-closing .grid > div { break-inside: avoid !important; page-break-inside: avoid !important; }
+  /* عزل الطباعة على المنطقة المختارة فقط (زر الطباعة الموحد) */
+  body.printing-isolate .lux-drawer { display: none !important; }
+  body.printing-isolate .lux-drawer:has(.print-target) { display: block !important; }
+  @page { margin: 1mm; size: A4; }
+}

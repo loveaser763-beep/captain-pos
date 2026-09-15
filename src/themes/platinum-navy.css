@@ -1,0 +1,29 @@
+/* Platinum Navy — نيلي + أسود */
+[data-theme="platinum-navy"] {
+  --bg-deep: #020617;
+  --bg-card: #0F172A;
+  --bg-card-hover: #1E293B;
+  --bg-input: #1E293B;
+  --bg-sidebar: #050D1F;
+  --text-primary: #F8FAFC;
+  --text-secondary: #94A3B8;
+  --text-muted: #64748B;
+  --accent: #6366F1;
+  --accent-hover: #818CF8;
+  --accent-glow: rgba(99,102,241,0.25);
+  --accent-subtle: rgba(99,102,241,0.08);
+  --primary: #818CF8;
+  --success: #22C55E;
+  --warning: #F59E0B;
+  --danger: #F43F5E;
+  --border: rgba(99,102,241,0.2);
+  --border-strong: rgba(99,102,241,0.4);
+  --shadow: 0 8px 32px rgba(0,0,0,0.6);
+  --shadow-sm: 0 4px 16px rgba(0,0,0,0.4);
+  --shadow-glow: 0 0 20px rgba(99,102,241,0.15);
+  --radius: 16px;
+  --radius-sm: 10px;
+  --gradient-card: linear-gradient(160deg, rgba(15,23,42,0.8), rgba(2,6,23,0.95));
+  --gradient-accent: linear-gradient(135deg, #6366F1, #818CF8);
+  --gradient-header: linear-gradient(90deg, #020617, #0F172A);
+}

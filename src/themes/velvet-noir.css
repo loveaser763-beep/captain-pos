@@ -1,0 +1,29 @@
+/* Velvet Noir — بنفسجي + أسود */
+[data-theme="velvet-noir"] {
+  --bg-deep: #0C0A1D;
+  --bg-card: #151229;
+  --bg-card-hover: #1E1A38;
+  --bg-input: #1E1A38;
+  --bg-sidebar: #0E0B22;
+  --text-primary: #F5F3FF;
+  --text-secondary: #A78BFA;
+  --text-muted: #7C3AED;
+  --accent: #8B5CF6;
+  --accent-hover: #A78BFA;
+  --accent-glow: rgba(139,92,246,0.25);
+  --accent-subtle: rgba(139,92,246,0.08);
+  --primary: #A78BFA;
+  --success: #34D399;
+  --warning: #FCD34D;
+  --danger: #F43F5E;
+  --border: rgba(139,92,246,0.2);
+  --border-strong: rgba(139,92,246,0.4);
+  --shadow: 0 8px 32px rgba(0,0,0,0.6);
+  --shadow-sm: 0 4px 16px rgba(0,0,0,0.4);
+  --shadow-glow: 0 0 20px rgba(139,92,246,0.15);
+  --radius: 16px;
+  --radius-sm: 10px;
+  --gradient-card: linear-gradient(160deg, rgba(21,18,41,0.8), rgba(12,10,29,0.95));
+  --gradient-accent: linear-gradient(135deg, #8B5CF6, #A78BFA);
+  --gradient-header: linear-gradient(90deg, #0C0A1D, #151229);
+}
