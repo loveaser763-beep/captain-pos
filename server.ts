@@ -3513,6 +3513,25 @@ async function startServer() {
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
+
+  // Auto-backup every hour (keep last 24 copies)
+  setInterval(() => {
+    try {
+      const backupsDir = path.join(DATA_DIR, "backups");
+      if (!fs.existsSync(backupsDir)) fs.mkdirSync(backupsDir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const dest = path.join(backupsDir, `database-${stamp}.sqlite`);
+      fs.copyFileSync(dbPath, dest);
+      const files = fs.readdirSync(backupsDir).filter((f) => f.startsWith("database-") && f.endsWith(".sqlite")).sort();
+      while (files.length > 24) {
+        const old = files.shift()!;
+        try { fs.unlinkSync(path.join(backupsDir, old)); } catch {}
+      }
+      console.log(`[AutoBackup] Hourly backup saved (${files.length} kept)`);
+    } catch (e) {
+      console.error("[AutoBackup] Hourly backup failed:", e);
+    }
+  }, 60 * 60 * 1000);
 }
 
 startServer().catch((e) => {
