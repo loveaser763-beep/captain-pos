@@ -1887,9 +1887,18 @@ async function startServer() {
     }
   });
 
-  // API - Download Direct SQLite Database File (.sqlite)
+  // API - Download Direct SQLite Database File (.sqlite) - DEVELOPER ONLY
   app.get("/api/backup/download-sqlite", async (req, res) => {
     try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "غير مصرح" });
+      }
+      const jwt = await import("jsonwebtoken");
+      const decoded = jwt.default.verify(authHeader.split(" ")[1], JWT_SECRET) as any;
+      if (decoded.role !== "developer") {
+        return res.status(403).json({ error: "ممنوع - للمبرمج فقط" });
+      }
       const fs = await import("fs");
       if (!fs.existsSync(dbPath)) {
         return res.status(404).json({ error: "ملف قاعدة البيانات غير موجود على الخادم." });
@@ -1902,9 +1911,18 @@ async function startServer() {
     }
   });
 
-  // API - Download Full Backup JSON File
+  // API - Download Full Backup JSON File - DEVELOPER ONLY
   app.get("/api/backup/download-json", async (req, res) => {
     try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "غير مصرح" });
+      }
+      const jwt = await import("jsonwebtoken");
+      const decoded = jwt.default.verify(authHeader.split(" ")[1], JWT_SECRET) as any;
+      if (decoded.role !== "developer") {
+        return res.status(403).json({ error: "ممنوع - للمبرمج فقط" });
+      }
       const tables = ["users", "suppliers", "items", "invoices", "invoice_items", "logs", "partners", "expenses", "settings", "inventory_audits", "inventory_audit_items"];
       const backupData: Record<string, any[]> = {};
       for (const t of tables) {

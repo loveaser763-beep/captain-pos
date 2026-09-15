@@ -651,7 +651,8 @@ export default function Settings({ currentUser }: SettingsProps) {
         </div>
       </div>
 
-      {/* Database Backup & Export Section */}
+      {/* Database Backup & Export Section - DEVELOPER ONLY */}
+      {currentUser?.role === "developer" && (
       <div className="bg-[#c3c6bb] border border-[#222222] p-4 space-y-4" id="settings-database-backup-section">
         <div className="border-b border-[#888888] pb-3">
           <h3 className="text-sm font-extrabold text-[#000000] flex items-center gap-2">
@@ -841,6 +842,7 @@ export default function Settings({ currentUser }: SettingsProps) {
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }
