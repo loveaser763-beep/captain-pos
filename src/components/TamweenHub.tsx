@@ -8,17 +8,17 @@ const tabs = [
   { id: "replacements", label: "الاستعاضات", icon: RefreshCw },
 ];
 
-export default function TamweenHub() {
+export default function TamweenHub({ onWithdrawNow }: { onWithdrawNow?: (customer: any) => void }) {
   const [activeTab, setActiveTab] = useState("customers");
 
   const renderContent = () => {
     switch (activeTab) {
       case "customers":
-        return <TamweenCustomers />;
+        return <TamweenCustomers onWithdrawNow={onWithdrawNow} />;
       case "replacements":
         return <TamweenReplacements />;
       default:
-        return <TamweenCustomers />;
+        return <TamweenCustomers onWithdrawNow={onWithdrawNow} />;
     }
   };
 

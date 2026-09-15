@@ -166,7 +166,10 @@ export default function App() {
       case "tamween_replacements":
         return <TamweenReplacements />;
       case "tamween":
-        return <TamweenHub />;
+        return <TamweenHub onWithdrawNow={(customer) => {
+          setTamweenCustomerForSale(customer);
+          setActiveTab("sales");
+        }} />;
       case "jameety":
         return <Jameety key={displayEntity} initialEntity={displayEntity} />;
       default:

@@ -1079,6 +1079,7 @@ if (true) {
                                 step="any"
                                 value={item.quantity || ""}
                                 onChange={(e) => updateCartQty(item.barcode, e.target.value)}
+                                onWheel={(e) => e.currentTarget.blur()}
                                 className="w-14 h-7 bg-[#b8bcb2] border border-[#888888] text-center text-xs font-bold text-[#000000] focus:outline-none"
                                 min="0.001"
                               />
@@ -1308,6 +1309,7 @@ if (true) {
                   min="0"
                   value={breadPoints || ""}
                   onChange={(e) => setBreadPoints(Number(e.target.value) || 0)}
+                  onWheel={(e) => e.currentTarget.blur()}
                   className="flex-1 h-9 bg-[#c3c6bb] border border-[#888888] px-3 text-right text-xs font-bold text-[#000000] focus:outline-none focus:border-[#222222] [appearance-none] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                   placeholder="0.00"
                 />
@@ -1326,6 +1328,7 @@ if (true) {
                   min="0"
                   value={bonus || ""}
                   onChange={(e) => setBonus(Number(e.target.value) || 0)}
+                  onWheel={(e) => e.currentTarget.blur()}
                   className="flex-1 h-9 bg-[#c3c6bb] border border-[#888888] px-3 text-right text-xs font-bold text-[#000000] focus:outline-none focus:border-[#222222] [appearance-none] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                   placeholder="0.00"
                 />
@@ -1352,6 +1355,7 @@ if (true) {
                   step="0.01"
                   value={discount || ""}
                   onChange={(e) => setDiscount(Number(e.target.value))}
+                  onWheel={(e) => e.currentTarget.blur()}
                   className="w-20 h-7 bg-[#c3c6bb] border border-[#888888] text-center text-xs font-bold text-[#000000] focus:outline-none"
                   placeholder="0.00"
                 />
@@ -1735,7 +1739,7 @@ if (true) {
                 <p style={{ margin: "0 0 3px 0", fontSize: "9px" }}>شكراً لتسوقكم معنا!</p>
                 <p style={{ margin: "0 0 2px 0", fontSize: "9px" }}>يسعدنا خدمتكم دائماً</p>
                 <p style={{ margin: "0", fontSize: "7px", color: "#666666" }}>━━━━━━━━━━━━━━━━━━━━</p>
-                <p style={{ margin: "3px 0 0 0", fontSize: "7px", color: "#666666" }}>منظومة الكابتن © 2026</p>
+                <p style={{ margin: "3px 0 0 0", fontSize: "7px", color: "#666666" }}>☎ 01010561128 — منظومة الكابتن © 2026</p>
               </div>
             </div>
 
