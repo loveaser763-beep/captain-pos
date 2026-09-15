@@ -316,36 +316,39 @@ export default function PurchaseInvoice({ currentUser }: PurchaseInvoiceProps) {
   };
 
   const updateRowField = (idx: number, field: keyof PurchaseItemInput, val: any) => {
-    const updated = [...items];
-    const item = updated[idx];
+    setItems(prev => {
+      const updated = [...prev];
+      const item = { ...updated[idx] };
 
-    if (field === "barcode") {
-      const found = dbItems.find(p => p.barcode === val);
-      if (found) {
-        item.barcode = found.barcode;
-        item.name = found.name;
-        item.unit = found.unit;
-        item.purchase_price = found.purchase_price;
-        item.retail_price = found.retail_price;
-        item.wholesale_price = found.wholesale_price;
-        item.total = item.quantity * found.purchase_price;
-        setError("");
-      } else {
-        item.barcode = val;
+      if (field === "barcode") {
+        const found = dbItems.find(p => p.barcode === val);
+        if (found) {
+          item.barcode = found.barcode;
+          item.name = found.name;
+          item.unit = found.unit;
+          item.purchase_price = found.purchase_price;
+          item.retail_price = found.retail_price;
+          item.wholesale_price = found.wholesale_price;
+          item.total = item.quantity * found.purchase_price;
+          setError("");
+        } else {
+          item.barcode = val;
+        }
       }
-    }
-    else if (field === "name") item.name = val;
-    else if (field === "unit") item.unit = val;
-    else if (field === "quantity") {
-      item.quantity = val === "" ? ("" as any) : (Number(val) || 0);
-      item.total = (Number(item.quantity) || 0) * (Number(item.purchase_price) || 0);
-    } else if (field === "purchase_price") {
-      item.purchase_price = val === "" ? ("" as any) : (Number(val) || 0);
-      item.total = (Number(item.quantity) || 0) * (Number(item.purchase_price) || 0);
-    } else if (field === "retail_price") item.retail_price = val === "" ? ("" as any) : (Number(val) || 0);
-    else if (field === "wholesale_price") item.wholesale_price = val === "" ? ("" as any) : (Number(val) || 0);
+      else if (field === "name") item.name = val;
+      else if (field === "unit") item.unit = val;
+      else if (field === "quantity") {
+        item.quantity = val === "" ? ("" as any) : (Number(val) || 0);
+        item.total = (Number(item.quantity) || 0) * (Number(item.purchase_price) || 0);
+      } else if (field === "purchase_price") {
+        item.purchase_price = val === "" ? ("" as any) : (Number(val) || 0);
+        item.total = (Number(item.quantity) || 0) * (Number(item.purchase_price) || 0);
+      } else if (field === "retail_price") item.retail_price = val === "" ? ("" as any) : (Number(val) || 0);
+      else if (field === "wholesale_price") item.wholesale_price = val === "" ? ("" as any) : (Number(val) || 0);
 
-    setItems(updated);
+      updated[idx] = item;
+      return updated;
+    });
   };
 
   const removeRow = (idx: number) => {
