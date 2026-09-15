@@ -1,12 +1,10 @@
 import React, { useState } from "react";
-import { CreditCard, FileText, RefreshCw } from "lucide-react";
+import { CreditCard, RefreshCw } from "lucide-react";
 import TamweenCustomers from "./TamweenCustomers";
-import TamweenReport from "./TamweenReport";
 import TamweenReplacements from "./TamweenReplacements";
 
 const tabs = [
   { id: "customers", label: "عملاء التموين", icon: CreditCard },
-  { id: "report", label: "التقرير الشهري", icon: FileText },
   { id: "replacements", label: "الاستعاضات", icon: RefreshCw },
 ];
 
@@ -17,8 +15,6 @@ export default function TamweenHub() {
     switch (activeTab) {
       case "customers":
         return <TamweenCustomers />;
-      case "report":
-        return <TamweenReport />;
       case "replacements":
         return <TamweenReplacements />;
       default:
