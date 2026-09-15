@@ -48,7 +48,7 @@ export default function App() {
     return () => window.removeEventListener("jameety-print-target", onTarget);
   }, []);
 
-  // Load user session on startup — من ملف على القرص فقط (بدون localStorage)
+  // Load user session on startup
   useEffect(() => {
     const savedTheme = getSavedTheme();
     applyTheme(savedTheme);
@@ -58,11 +58,21 @@ export default function App() {
       .then((data) => { if (data?.theme) applyTheme(data.theme as any); })
       .catch(() => {});
 
+    // Try Electron session first
     const api = (window as any).electronAPI;
     if (api?.loadSession) {
       api.loadSession().then((user: any) => {
         if (user && user.id) setCurrentUser(user);
       }).catch(() => {});
+    } else {
+      // Web: load from localStorage
+      try {
+        const saved = localStorage.getItem("captain_session");
+        if (saved) {
+          const user = JSON.parse(saved);
+          if (user && user.id) setCurrentUser(user);
+        }
+      } catch {}
     }
   }, []);
 
@@ -70,6 +80,8 @@ export default function App() {
     setCurrentUser(user);
     const api = (window as any).electronAPI;
     if (api?.saveSession) api.saveSession(user);
+    // Save to localStorage for web
+    try { localStorage.setItem("captain_session", JSON.stringify(user)); } catch {}
 
     if (user.role === "admin" || user.role === "developer") {
       setActiveTab("dashboard");

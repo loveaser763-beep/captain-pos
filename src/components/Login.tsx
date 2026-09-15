@@ -52,6 +52,27 @@ export default function Login({ onLoginSuccess }: LoginProps) {
     setError("");
   };
 
+  const quickLogin = async (role: string) => {
+    let user = "", pass = "";
+    if (role === "admin") { user = "admin"; pass = "admin123"; }
+    else if (role === "cashier") { user = "cashier"; pass = "cashier123"; }
+    else if (role === "storekeeper") { user = "store"; pass = "store123"; }
+    setLoading(true);
+    setError("");
+    try {
+      const data = await apiLogin(user, pass);
+      if (data.success && data.user) {
+        onLoginSuccess(data.user);
+      } else {
+        setError(data.message || "خطأ في الدخول.");
+      }
+    } catch {
+      setError("خطأ في الاتصال بالشبكة.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="lux-scope min-h-screen flex flex-col justify-center items-center p-4 select-none font-sans" id="login-screen" style={{ direction: "rtl" }}>
       <div className="w-full max-w-md lux-glass p-6 md:p-8 relative" id="login-card">
@@ -155,7 +176,8 @@ export default function Login({ onLoginSuccess }: LoginProps) {
             <button
               id="btn-fill-admin"
               type="button"
-              onClick={() => fillCredentials("admin")}
+              onClick={() => quickLogin("admin")}
+              disabled={loading}
               className="lux-btn lux-btn-ghost flex-1 min-w-[70px]"
             >
               المدير
@@ -163,7 +185,8 @@ export default function Login({ onLoginSuccess }: LoginProps) {
             <button
               id="btn-fill-cashier"
               type="button"
-              onClick={() => fillCredentials("cashier")}
+              onClick={() => quickLogin("cashier")}
+              disabled={loading}
               className="lux-btn lux-btn-ghost flex-1 min-w-[70px]"
             >
               الكاشير
@@ -171,7 +194,8 @@ export default function Login({ onLoginSuccess }: LoginProps) {
             <button
               id="btn-fill-store"
               type="button"
-              onClick={() => fillCredentials("storekeeper")}
+              onClick={() => quickLogin("storekeeper")}
+              disabled={loading}
               className="lux-btn lux-btn-ghost flex-1 min-w-[70px]"
             >
               أمين المخزن
