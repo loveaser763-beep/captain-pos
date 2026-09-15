@@ -1597,34 +1597,36 @@ if (true) {
                 boxSizing: "border-box",
                 backgroundColor: "#ffffff",
                 color: "#000000",
-                padding: "16px 12px",
+                padding: "8px 4px",
                 margin: "0 auto",
                 fontFamily: "Arial, Tahoma, sans-serif",
                 fontSize: "11px",
                 border: "1px solid #000000",
-                lineHeight: "1.4"
+                lineHeight: "1.4",
+                overflow: "hidden",
+                wordWrap: "break-word"
               }}
             >
               {/* Receipt Header */}
-              <div style={{ textAlign: "center", marginBottom: "8px" }}>
-                <div style={{ fontSize: "18px", fontWeight: "900", margin: "0 0 2px 0", color: "#000000", letterSpacing: "1px" }}>
+              <div style={{ textAlign: "center", marginBottom: "6px" }}>
+                <div style={{ fontSize: "14px", fontWeight: "900", margin: "0 0 2px 0", color: "#000000" }}>
                   {printData.marketName || "منظومة الكابتن"}
                 </div>
                 {printData.marketPhone && (
-                  <div style={{ fontSize: "10px", margin: "0", color: "#444444" }}>
+                  <div style={{ fontSize: "9px", margin: "0", color: "#444444" }}>
                     ☎ {printData.marketPhone}
                   </div>
                 )}
-                <div style={{ margin: "8px 0", padding: "4px 0", borderTop: "2px solid #000000", borderBottom: "2px solid #000000", fontWeight: "900", fontSize: "12px", letterSpacing: "2px" }}>
+                <div style={{ margin: "6px 0", padding: "3px 0", borderTop: "1.5px solid #000000", borderBottom: "1.5px solid #000000", fontWeight: "900", fontSize: "10px", letterSpacing: "1px" }}>
                   ═══ إيصال مبيعات ═══
                 </div>
               </div>
 
               {/* Receipt Meta Details */}
-              <div style={{ fontSize: "10px", fontWeight: "bold", borderBottom: "1px dashed #000000", paddingBottom: "6px", marginBottom: "6px" }}>
+              <div style={{ fontSize: "9px", fontWeight: "bold", borderBottom: "1px dashed #000000", paddingBottom: "4px", marginBottom: "4px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <span>رقم الفاتورة:</span>
-                  <span style={{ fontFamily: "monospace", fontSize: "11px" }}>{printData.invoice_number}</span>
+                  <span style={{ fontFamily: "monospace" }}>{printData.invoice_number}</span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", marginTop: "2px" }}>
                   <span>التاريخ:</span>
@@ -1632,7 +1634,7 @@ if (true) {
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", marginTop: "2px" }}>
                   <span>العميل:</span>
-                  <span>{printData.customer_name || "عميل نقدي"}</span>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{printData.customer_name || "عميل نقدي"}</span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", marginTop: "2px" }}>
                   <span>الكاشير:</span>
@@ -1641,28 +1643,28 @@ if (true) {
               </div>
 
               {/* Items Table */}
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "10px", marginBottom: "8px" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "9px", marginBottom: "8px", tableLayout: "fixed" }}>
                 <thead>
                   <tr style={{ borderBottom: "1.5px solid #000000", fontWeight: "900" }}>
                     <th style={{ textAlign: "right", paddingBottom: "4px" }}>الصنف</th>
-                    <th style={{ textAlign: "center", paddingBottom: "4px", width: "32px" }}>ك</th>
-                    <th style={{ textAlign: "center", paddingBottom: "4px", width: "45px" }}>السعر</th>
-                    <th style={{ textAlign: "left", paddingBottom: "4px", width: "55px" }}>الإجمالي</th>
+                    <th style={{ textAlign: "center", paddingBottom: "4px", width: "28px" }}>ك</th>
+                    <th style={{ textAlign: "center", paddingBottom: "4px", width: "40px" }}>السعر</th>
+                    <th style={{ textAlign: "left", paddingBottom: "4px", width: "50px" }}>الإجمالي</th>
                   </tr>
                 </thead>
                 <tbody>
                   {printData.items.map((it: any, index: number) => (
                     <tr key={index} style={{ borderBottom: "1px dashed #dddddd" }}>
-                      <td style={{ textAlign: "right", padding: "4px 0", fontWeight: "bold", wordBreak: "break-word" }}>
+                      <td style={{ textAlign: "right", padding: "3px 0", fontWeight: "bold", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {it.name}
                       </td>
-                      <td style={{ textAlign: "center", padding: "4px 0", fontFamily: "monospace" }}>
+                      <td style={{ textAlign: "center", padding: "3px 0", fontFamily: "monospace" }}>
                         {it.quantity}
                       </td>
-                      <td style={{ textAlign: "center", padding: "4px 0", fontFamily: "monospace" }}>
+                      <td style={{ textAlign: "center", padding: "3px 0", fontFamily: "monospace" }}>
                         {(it.price || 0).toFixed(1)}
                       </td>
-                      <td style={{ textAlign: "left", padding: "4px 0", fontWeight: "bold", fontFamily: "monospace" }}>
+                      <td style={{ textAlign: "left", padding: "3px 0", fontWeight: "bold", fontFamily: "monospace" }}>
                         {(it.total || 0).toFixed(2)}
                       </td>
                     </tr>
@@ -1671,7 +1673,7 @@ if (true) {
               </table>
 
               {/* Totals Summary */}
-              <div style={{ borderTop: "1.5px solid #000000", paddingTop: "6px", fontSize: "10px", fontWeight: "bold" }}>
+              <div style={{ borderTop: "1.5px solid #000000", paddingTop: "6px", fontSize: "9px", fontWeight: "bold" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "2px" }}>
                   <span>المجموع الفرعي:</span>
                   <span style={{ fontFamily: "monospace" }}>{(printData.subtotal || 0).toFixed(2)} ج.م</span>
@@ -1717,11 +1719,11 @@ if (true) {
                   justifyContent: "space-between",
                   backgroundColor: "#000000",
                   color: "#ffffff",
-                  padding: "6px 8px",
+                  padding: "4px 6px",
                   fontWeight: "900",
-                  fontSize: "13px",
+                  fontSize: "11px",
                   marginTop: "6px",
-                  letterSpacing: "0.5px"
+                  letterSpacing: "0"
                 }}>
                   <span>═══ الإجمالي النهائي ═══</span>
                   <span style={{ fontFamily: "monospace" }}>{(printData.total || 0).toFixed(2)} ج.م</span>
@@ -1729,11 +1731,11 @@ if (true) {
               </div>
 
               {/* Footer */}
-              <div style={{ textAlign: "center", marginTop: "12px", paddingTop: "8px", borderTop: "2px dashed #000000", fontSize: "9px", fontWeight: "bold", color: "#222222" }}>
-                <p style={{ margin: "0 0 4px 0", fontSize: "10px" }}>شكراً لتسوقكم معنا!</p>
-                <p style={{ margin: "0 0 2px 0", fontSize: "10px" }}>يسعدنا خدمتكم دائماً</p>
-                <p style={{ margin: "0", fontSize: "8px", color: "#666666", fontFamily: "monospace" }}>━━━━━━━━━━━━━━━━━━━━</p>
-                <p style={{ margin: "4px 0 0 0", fontSize: "8px", color: "#666666", fontFamily: "monospace" }}>منظومة الكابتن © 2026</p>
+              <div style={{ textAlign: "center", marginTop: "8px", paddingTop: "6px", borderTop: "1.5px dashed #000000", fontSize: "8px", fontWeight: "bold", color: "#222222" }}>
+                <p style={{ margin: "0 0 3px 0", fontSize: "9px" }}>شكراً لتسوقكم معنا!</p>
+                <p style={{ margin: "0 0 2px 0", fontSize: "9px" }}>يسعدنا خدمتكم دائماً</p>
+                <p style={{ margin: "0", fontSize: "7px", color: "#666666" }}>━━━━━━━━━━━━━━━━━━━━</p>
+                <p style={{ margin: "3px 0 0 0", fontSize: "7px", color: "#666666" }}>منظومة الكابتن © 2026</p>
               </div>
             </div>
 
