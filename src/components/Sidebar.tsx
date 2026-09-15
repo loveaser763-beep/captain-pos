@@ -162,7 +162,6 @@ export default function Sidebar({
             <p className="text-[10px] font-black text-slate-500 px-1">إدارة التموين</p>
             {([
               { e: "jameety" as const, label: "جمعيتي", sub: "التموين الرئيسي", Icon: Store, grad: "from-amber-400 to-orange-600" },
-              ...(!import.meta.env.VITE_HIDE_ZESTY ? [{ e: "zesty" as const, label: "زيستي", sub: "(نادي بورتو الرياضي)", Icon: Sparkles, grad: "from-cyan-400 to-blue-600" }] : []),
             ]).map(({ e, label, sub, Icon, grad }) => {
               const isActive = activeTab === "jameety" && entity === e;
               return (
