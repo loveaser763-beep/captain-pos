@@ -217,13 +217,6 @@ export default function PurchaseInvoice({ currentUser }: PurchaseInvoiceProps) {
         if (response.ok) {
           const data = await response.json();
           setSearchResults(data);
-
-          const exactMatch = data.find((i: Item) => i.barcode === searchCode);
-          if (exactMatch) {
-            addExistingProductToInvoice(exactMatch);
-            setSearchCode("");
-            setSearchResults([]);
-          }
         }
       } catch (err) {
         console.error("خطأ أثناء البحث المتزامن للمشتريات", err);
@@ -295,7 +288,7 @@ export default function PurchaseInvoice({ currentUser }: PurchaseInvoiceProps) {
         wholesale_price: "" as any,
         total: 0
       };
-      setItems([...items, newItem]);
+      setItems(prev => [...prev, newItem]);
       setSearchCode("");
       setSearchResults([]);
     }
@@ -312,7 +305,7 @@ export default function PurchaseInvoice({ currentUser }: PurchaseInvoiceProps) {
       wholesale_price: "" as any,
       total: 0
     };
-    setItems([...items, newItem]);
+    setItems(prev => [...prev, newItem]);
   };
 
   const updateRowField = (idx: number, field: keyof PurchaseItemInput, val: any) => {
