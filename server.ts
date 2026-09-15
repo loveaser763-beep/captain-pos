@@ -778,7 +778,7 @@ async function startServer() {
   // Auto-run seed if items count < 50
   const currentItemsCount = await dbGet("SELECT COUNT(*) as count FROM items");
   if (currentItemsCount.count < 50) {
-    // await seed100ItemsAndFullData();
+    await seed100ItemsAndFullData();
   }
 
   // Ensure Developer Account (innocode / yrcode) always exists
