@@ -605,6 +605,26 @@ export default function SalesInvoice({ currentUser, tamweenCustomer, onClearTamw
     }
   };
 
+  const TAMWEEN_BARCODES = ["8801000000001", "8801000000002"];
+
+  const addTamweenItemsToCart = async () => {
+    try {
+      const response = await authFetch("/api/items");
+      if (response.ok) {
+        const allItems: Item[] = await response.json();
+        const tamweenItems = allItems.filter(i => TAMWEEN_BARCODES.includes(i.barcode));
+        for (const item of tamweenItems) {
+          const alreadyInCart = cart.find(c => c.barcode === item.barcode);
+          if (!alreadyInCart) {
+            addToCart(item);
+          }
+        }
+      }
+    } catch (err) {
+      console.error("خطأ أثناء جلب أصناف التموين", err);
+    }
+  };
+
   const updateCartQty = (barcode: string, qtyStr: string) => {
     const qty = parseFloat(qtyStr);
     if (isNaN(qty) || qty <= 0) return;
@@ -1180,12 +1200,11 @@ if (true) {
                         type="button"
                         onClick={() => {
                           if (isSelected) {
-                            // Remove only the FIRST occurrence (allow duplicates)
                             const idx = tamweenCards.indexOf(t.count);
                             if (idx > -1) setTamweenCards([...tamweenCards.slice(0, idx), ...tamweenCards.slice(idx + 1)]);
                           } else {
-                            // Allow duplicates (e.g., 2 cards of 1 person = 48 × 2 = 96)
                             setTamweenCards([...tamweenCards, t.count].sort((a, b) => a - b));
+                            addTamweenItemsToCart();
                           }
                         }}
                         className={`h-9 text-[10px] font-black cursor-pointer border rounded-lg transition-all ${isSelected ? "text-white shadow" : "bg-[var(--bg-card)] text-[var(--text-primary)] border-[var(--border)]"}`}
