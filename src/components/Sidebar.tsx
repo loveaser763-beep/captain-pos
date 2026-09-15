@@ -156,14 +156,14 @@ export default function Sidebar({
           })}
         </nav>
 
-        {/* إدارة التموين - جمعيتي وفوقها زيستي (نادي بورتو الرياضي) */}
+        {/* إدارة التموين - جمعيتي + زيستي */}
         {jameetyTab && (
           <div className="p-2 border-b border-[rgba(221,228,239,0.12)] shrink-0 space-y-1">
             <p className="text-[10px] font-black text-slate-500 px-1">إدارة التموين</p>
             {([
-              { e: "jameety", label: "جمعيتي", sub: "التموين الرئيسي", Icon: Store, grad: "from-amber-400 to-orange-600" },
-              { e: "zesty", label: "زيستي", sub: "(نادي بورتو الرياضي)", Icon: Sparkles, grad: "from-cyan-400 to-blue-600" },
-            ] as const).map(({ e, label, sub, Icon, grad }) => {
+              { e: "jameety" as const, label: "جمعيتي", sub: "التموين الرئيسي", Icon: Store, grad: "from-amber-400 to-orange-600" },
+              ...(!import.meta.env.VITE_HIDE_ZESTY ? [{ e: "zesty" as const, label: "زيستي", sub: "(نادي بورتو الرياضي)", Icon: Sparkles, grad: "from-cyan-400 to-blue-600" }] : []),
+            ]).map(({ e, label, sub, Icon, grad }) => {
               const isActive = activeTab === "jameety" && entity === e;
               return (
                 <button
