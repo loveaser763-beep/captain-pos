@@ -1193,27 +1193,37 @@ if (true) {
                     { count: 9, value: 323 },
                     { count: 10, value: 348 }
                   ].map(t => {
-                    const isSelected = tamweenCards.includes(t.count);
+                    const occurrences = tamweenCards.filter(c => c === t.count);
+                    const isSelected = occurrences.length > 0;
                     return (
                       <button
                         key={t.count}
                         type="button"
                         onClick={() => {
-                          if (isSelected) {
-                            const idx = tamweenCards.indexOf(t.count);
-                            if (idx > -1) setTamweenCards([...tamweenCards.slice(0, idx), ...tamweenCards.slice(idx + 1)]);
-                          } else {
-                            setTamweenCards([...tamweenCards, t.count].sort((a, b) => a - b));
-                            addTamweenItemsToCart();
-                          }
+                          setTamweenCards([...tamweenCards, t.count].sort((a, b) => a - b));
+                          addTamweenItemsToCart();
                         }}
-                        className={`h-9 text-[10px] font-black cursor-pointer border rounded-lg transition-all ${isSelected ? "text-white shadow" : "bg-[var(--bg-card)] text-[var(--text-primary)] border-[var(--border)]"}`}
+                        className={`h-9 text-[10px] font-black cursor-pointer border rounded-lg transition-all relative ${isSelected ? "text-white shadow" : "bg-[var(--bg-card)] text-[var(--text-primary)] border-[var(--border)]"}`}
                         style={isSelected ? {background: 'var(--warning)', borderColor: 'var(--warning)'} : {}}
-                        title={isSelected ? "إلغاء التحديد" : "إضافة بطاقة"}
+                        title={isSelected ? `إضافة أخرى (${occurrences.length}×)` : "إضافة بطاقة"}
                       >
+                        {isSelected && (
+                          <span
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const idx = tamweenCards.indexOf(t.count);
+                              if (idx > -1) setTamweenCards([...tamweenCards.slice(0, idx), ...tamweenCards.slice(idx + 1)]);
+                            }}
+                            className="absolute -top-1.5 -left-1.5 w-4 h-4 bg-red-500 text-white rounded-full flex items-center justify-center text-[8px] font-black leading-none hover:bg-red-700 z-10"
+                            title="حذف واحدة"
+                          >×</span>
+                        )}
                         {t.count === 1 ? "فرد" : t.count === 2 ? "فردين" : `${t.count} أفراد`}
                         <br />
                         <span className="text-[9px]">{t.value} ج</span>
+                        {occurrences.length > 1 && (
+                          <span className="block text-[8px] mt-0.5 opacity-80">{occurrences.length}×</span>
+                        )}
                       </button>
                     );
                   })}
