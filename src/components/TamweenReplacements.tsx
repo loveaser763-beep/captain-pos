@@ -553,7 +553,7 @@ const fetchReplacements = async () => {
         <button
           onClick={() => { setEditingItem(null); resetForm(); setShowModal(true); }}
           className="h-9 px-4 font-bold text-xs transition-all flex items-center gap-1.5 cursor-pointer shrink-0 rounded-lg shadow-md hover:brightness-110"
-          style={{ background: "linear-gradient(135deg,#059669,#10b981)", color: "#fff" }}
+          style={{ background: "linear-gradient(135deg,#047857,#0F766E)", color: "#fff" }}
         >
           <Plus size={14} strokeWidth={2.5} />
           <span>+ إضافة استعاضة</span>
@@ -1042,12 +1042,12 @@ const fetchReplacements = async () => {
                         const mt = machineData?.totals || { smartSales: 0, smartSupport: 0, diff: 0, autoDiff: 0 };
                         const diff = Number(mt.diff || 0);
                         const auto = Number(mt.autoDiff || 0);
-                        const dTone = (v: number) => (v < 0 ? "#e11d48" : v > 0 ? "#d97706" : "#2563eb");
+                        const dTone = (v: number) => (v < 0 ? "var(--danger)" : v > 0 ? "var(--warning)" : "var(--primary)");
                         const tiles = [
-                          { k: "sales", label: "إجمالي مبيعات سمارت (يدوي)", value: Number(mt.smartSales || 0), icon: <BarChart3 size={16} strokeWidth={2.25} />, c: "#2563eb", bg: "rgba(37,99,235,.1)" },
-                          { k: "support", label: "قيمة الدعم من سمارت (يدوي)", value: Number(mt.smartSupport || 0), icon: <CreditCard size={16} strokeWidth={2.25} />, c: "#7c3aed", bg: "rgba(124,58,237,.1)" },
-                          { k: "auto", label: "الفرق المقترح (تلقائي)", value: auto, icon: <Gem size={16} strokeWidth={2.25} />, c: dTone(auto), bg: dTone(auto) === "#e11d48" ? "rgba(225,29,72,.1)" : "rgba(37,99,235,.1)" },
-                          { k: "manual", label: "الفرق المُدخل (يدوي)", value: diff, icon: <Eye size={16} strokeWidth={2.25} />, c: dTone(diff), bg: dTone(diff) === "#e11d48" ? "rgba(225,29,72,.1)" : "rgba(37,99,235,.1)" },
+                          { k: "sales", label: "إجمالي مبيعات سمارت (يدوي)", value: Number(mt.smartSales || 0), icon: <BarChart3 size={16} strokeWidth={2.25} />, c: "var(--primary)", bg: "rgba(37,99,235,.1)" },
+                          { k: "support", label: "قيمة الدعم من سمارت (يدوي)", value: Number(mt.smartSupport || 0), icon: <CreditCard size={16} strokeWidth={2.25} />, c: "var(--series-2)", bg: "rgba(124,58,237,.1)" },
+                          { k: "auto", label: "الفرق المقترح (تلقائي)", value: auto, icon: <Gem size={16} strokeWidth={2.25} />, c: dTone(auto), bg: dTone(auto) === "var(--danger)" ? "rgba(225,29,72,.1)" : dTone(auto) === "var(--warning)" ? "rgba(217,119,6,.1)" : "rgba(37,99,235,.1)" },
+                          { k: "manual", label: "الفرق المُدخل (يدوي)", value: diff, icon: <Eye size={16} strokeWidth={2.25} />, c: dTone(diff), bg: dTone(diff) === "var(--danger)" ? "rgba(225,29,72,.1)" : dTone(diff) === "var(--warning)" ? "rgba(217,119,6,.1)" : "rgba(37,99,235,.1)" },
                         ];
                         return tiles.map((t) => (
                           <div key={t.k} className="rounded-xl p-3.5 border" style={{ background: "var(--bg-input)", borderColor: "var(--border)" }}>
@@ -1128,18 +1128,18 @@ const fetchReplacements = async () => {
                       </div>
                     );
                     const mt = machineData?.totals || { smartSales: 0, smartSupport: 0, diff: 0, autoDiff: 0 };
-                    const dTone = (v: number) => (v < 0 ? "#e11d48" : v > 0 ? "#d97706" : "#2563eb");
+                    const dTone = (v: number) => (v < 0 ? "var(--danger)" : v > 0 ? "var(--warning)" : "var(--primary)");
                     const cells = [
-                      { l: "إجمالي مبيعات سمارت", v: Number(mt.smartSales || 0), c: "#2563eb" },
-                      { l: "إجمالي دعم سمارت", v: Number(mt.smartSupport || 0), c: "#7c3aed" },
+                      { l: "إجمالي مبيعات سمارت", v: Number(mt.smartSales || 0), c: "var(--primary)" },
+                      { l: "إجمالي دعم سمارت", v: Number(mt.smartSupport || 0), c: "var(--series-2)" },
                       { l: "الفرق المقترح (تلقائي)", v: Number(mt.autoDiff || 0), c: dTone(Number(mt.autoDiff || 0)) },
                       { l: "الفرق المُدخل (يدوي)", v: Number(mt.diff || 0), c: dTone(Number(mt.diff || 0)) },
                     ];
                     return (
-                      <div className="rounded-xl border-2 overflow-hidden" style={{ borderColor: "#e5e7eb", boxShadow: "0 6px 22px rgba(0,0,0,.08)" }}>
+                      <div className="rounded-xl border-2 overflow-hidden" style={{ borderColor: "var(--border)", boxShadow: "0 6px 22px rgba(0,0,0,.08)" }}>
                         <table className="w-full text-right text-xs border-collapse">
                           <thead>
-                            <tr className="bg-[#f3f4f6] text-[#222222]" style={{ borderBottom: "2px solid #d1d5db" }}>
+                            <tr style={{ background: "var(--bg-input)", color: "var(--text-primary)", borderBottom: "2px solid var(--border-strong)" }}>
                               <th className="py-2.5 px-3 font-black">#</th>
                               <th className="py-2.5 px-3 font-black">التاريخ</th>
                               <th className="py-2.5 px-3 font-black">مبيعات سمارت (يدوي)</th>
@@ -1153,16 +1153,16 @@ const fetchReplacements = async () => {
                           <tbody>
                             {list.map((d, i) => {
                               const zero = Math.abs(Number(d.diff) || 0) < 0.005;
-                              const tone = zero ? { bg: "#f3f4f6", fg: "#6b7280", bd: "#e5e7eb" }
+                              const tone = zero ? { bg: "#f3f4f6", fg: "#495057", bd: "#e5e7eb" }
                                 : d.diff > 0 ? { bg: "#fffbeb", fg: "#b45309", bd: "#fcd34d" }
                                 : { bg: "#fef2f2", fg: "#be123c", bd: "#fca5a5" };
                               const manual = d.hasManualDiff;
                               return (
-                                <tr key={d.day} style={{ background: i % 2 ? "#fafafa" : "#ffffff" }}>
-                                  <td className="py-2 px-3 font-mono font-black" style={{ color: "var(--text-muted)" }}>{i + 1}</td>
+                                <tr key={d.day} style={{ background: i % 2 ? "var(--bg-card-hover)" : "var(--bg-card)" }}>
+                                  <td className="py-2 px-3 font-mono font-black" style={{ color: "var(--text-secondary)" }}>{i + 1}</td>
                                   <td className="py-2 px-3 font-mono font-black">{d.day}</td>
-                                  <td className="py-2 px-3 font-mono font-black" style={{ color: "#2563eb" }}>{Number(d.smartSales || 0).toFixed(2)}</td>
-                                  <td className="py-2 px-3 font-mono font-black" style={{ color: "#7c3aed" }}>{Number(d.smartSupport || 0).toFixed(2)}</td>
+                                  <td className="py-2 px-3 font-mono font-black" style={{ color: "var(--primary)" }}>{Number(d.smartSales || 0).toFixed(2)}</td>
+                                  <td className="py-2 px-3 font-mono font-black" style={{ color: "var(--series-2)" }}>{Number(d.smartSupport || 0).toFixed(2)}</td>
                                   <td className="py-2 px-3">
                                     <span className="inline-block px-2 py-0.5 rounded-md font-mono font-black text-[11px]" style={{ background: tone.bg, color: tone.fg, border: `1px solid ${tone.bd}` }}>
                                       {d.diff > 0 ? "+" : d.diff < 0 ? "−" : ""}{Math.abs(Number(d.diff) || 0).toFixed(2)}
@@ -1182,9 +1182,9 @@ const fetchReplacements = async () => {
                             })}
                           </tbody>
                         </table>
-                        <div className="grid grid-cols-2 lg:grid-cols-4" style={{ background: "#f3f4f6", borderTop: "2px solid #e5e7eb" }}>
+                        <div className="grid grid-cols-2 lg:grid-cols-4" style={{ background: "var(--bg-card-hover)", borderTop: "2px solid var(--border-strong)" }}>
                           {cells.map((c) => (
-                            <div key={c.l} className="px-3 py-2.5 text-center" style={{ borderRight: "1px solid #e5e7eb" }}>
+                            <div key={c.l} className="px-3 py-2.5 text-center" style={{ borderRight: "1px solid var(--border)" }}>
                               <div className="text-[10px] font-black" style={{ color: "var(--text-secondary)" }}>{c.l}</div>
                               <div className="text-[16px] font-black font-mono" style={{ color: c.c }}>
                                 {c.v < 0 ? "−" : ""}{Math.abs(c.v).toFixed(2)} <span className="text-[10px]">ج.م</span>
