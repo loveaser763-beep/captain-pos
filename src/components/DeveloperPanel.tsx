@@ -13,12 +13,11 @@ import {
   Play,
   FileCode,
   HardDrive,
-  KeyRound,
-  Copy,
-  Check
+  KeyRound
 } from "lucide-react";
 import { authFetch } from "../authFetch";
 import { User } from "../types";
+import LicenseCenter from "./LicenseCenter";
 
 interface DeveloperPanelProps {
   currentUser: User | null;
@@ -29,14 +28,10 @@ export default function DeveloperPanel({ currentUser }: DeveloperPanelProps) {
   const [loadingStats, setLoadingStats] = useState(true);
 
   // Active Sub-Tab
-  const [activeSubTab, setActiveSubTab] = useState<"overview" | "reset" | "sql" | "backup" | "users" | "license">("overview");
+  const [activeSubTab, setActiveSubTab] = useState<"overview" | "reset" | "sql" | "backup" | "users">("overview");
 
-  // License Key Generator State
-  const [licCode, setLicCode] = useState("");
-  const [licKey, setLicKey] = useState("");
-  const [licMsg, setLicMsg] = useState({ type: "", text: "" });
-  const [isGenLic, setIsGenLic] = useState(false);
-  const [copiedLic, setCopiedLic] = useState(false);
+  // مركز الترخيص (مربع منفر)
+  const [showLicenseCenter, setShowLicenseCenter] = useState(false);
 
   // Reset System State
   const [resetOptions, setResetOptions] = useState({
@@ -96,45 +91,6 @@ export default function DeveloperPanel({ currentUser }: DeveloperPanelProps) {
     fetchStats();
     fetchUsers();
   }, []);
-
-  // توليد مفتاح تفعيل لجهاز عميل (بلا نت — التوقيع يتم على المفتاح الخاص)
-  const handleGenerateLicense = async () => {
-    const code = licCode.trim().toUpperCase();
-    if (!/^CAP-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$/.test(code)) {
-      setLicMsg({ type: "error", text: "صيغة كود الجهاز غلط — الصيغة: CAP-XXXX-XXXX-XXXX" });
-      setLicKey("");
-      return;
-    }
-    setIsGenLic(true);
-    setLicMsg({ type: "", text: "" });
-    setLicKey("");
-    try {
-      const res = await authFetch("/api/developer/license/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code }),
-      });
-      const data = await res.json();
-      if (data?.ok && data?.key) {
-        setLicKey(data.key);
-        setLicMsg({ type: "success", text: "اتولّد المفتاح — انسخه وأرسله لصاحب الجهاز." });
-      } else {
-        setLicMsg({ type: "error", text: data?.error || "تعذّر توليد المفتاح" });
-      }
-    } catch {
-      setLicMsg({ type: "error", text: "تعذّر الاتصال بالسيرفر" });
-    } finally {
-      setIsGenLic(false);
-    }
-  };
-
-  const handleCopyLicenseKey = async () => {
-    try {
-      await navigator.clipboard.writeText(licKey);
-      setCopiedLic(true);
-      setTimeout(() => setCopiedLic(false), 1800);
-    } catch {}
-  };
 
   // System Reset Handler
   const handleSystemReset = async (e: FormEvent) => {
@@ -270,13 +226,24 @@ export default function DeveloperPanel({ currentUser }: DeveloperPanelProps) {
           </div>
         </div>
 
-        <button
-          onClick={fetchStats}
-          className="px-3 py-1.5 bg-[#222222] hover:bg-[#000000] text-[#c3c6bb] font-bold text-xs flex items-center gap-2 transition-colors cursor-pointer self-start md:self-auto"
-        >
-          <RefreshCw size={14} className={loadingStats ? "animate-spin" : ""} />
-          <span>تحديث إحصائيات المحرك</span>
-        </button>
+        <div className="flex items-center gap-2 self-start md:self-auto">
+          <button
+            onClick={() => setShowLicenseCenter(true)}
+            className="px-4 py-2.5 bg-[#222222] hover:bg-[#000000] text-[#c3c6bb] font-black text-xs flex items-center gap-2 transition-colors cursor-pointer border-2 border-[#000000] shadow-[3px_3px_0_#000000] hover:shadow-[1px_1px_0_#000000] hover:translate-x-[2px] hover:translate-y-[2px]"
+            title="توليد مفاتيح التفعيل + سجل الأجهزة"
+          >
+            <KeyRound size={15} />
+            <span>الترخيص والتفعيل</span>
+          </button>
+
+          <button
+            onClick={fetchStats}
+            className="px-3 py-1.5 bg-[#222222] hover:bg-[#000000] text-[#c3c6bb] font-bold text-xs flex items-center gap-2 transition-colors cursor-pointer"
+          >
+            <RefreshCw size={14} className={loadingStats ? "animate-spin" : ""} />
+            <span>تحديث إحصائيات المحرك</span>
+          </button>
+        </div>
       </div>
 
       {/* Control Tabs Header */}
@@ -339,18 +306,6 @@ export default function DeveloperPanel({ currentUser }: DeveloperPanelProps) {
         >
           <Key size={14} />
           <span>إدارة حسابات النظام والجذر</span>
-        </button>
-
-        <button
-          onClick={() => setActiveSubTab("license")}
-          className={`px-4 py-2 text-xs font-bold transition-colors cursor-pointer flex items-center gap-2 ${
-            activeSubTab === "license"
-              ? "bg-[#222222] text-[#c3c6bb]"
-              : "bg-[#c3c6bb] text-[#222222] hover:bg-[#b8bcb2]"
-          }`}
-        >
-          <KeyRound size={14} />
-          <span>توليد مفاتيح تفعيل الأجهزة</span>
         </button>
       </div>
 
@@ -713,83 +668,8 @@ export default function DeveloperPanel({ currentUser }: DeveloperPanelProps) {
         </div>
       )}
 
-      {/* SUB-TAB 6: LICENSE KEY GENERATOR */}
-      {activeSubTab === "license" && (
-        <div className="bg-[#c3c6bb] p-6 border border-[#222222] space-y-4 max-w-[760px]">
-          <h2 className="text-sm font-black text-[#000000]">توليد مفتاح تفعيل لجهاز عميل</h2>
-          <p className="text-xs text-[#555555] font-semibold leading-relaxed">
-            التفعيل بلا إنترنت: صاحب الجهاز يفتح البرنامج فيظهر له <b>كود الجهاز</b> بصيغة
-            <span className="font-mono"> CAP-XXXX-XXXX-XXXX</span> — يرسله إليك، وتُولّد له هنا مفتاحًا صالحًا على جهازه وحده.
-            نقل البرنامج لجهاز آخر يعني كودًا مختلفًا، فيصبح المفتاح القديم بلا عمل.
-          </p>
-
-          {licMsg.text && (
-            <div
-              className={`p-3 border text-xs font-bold ${
-                licMsg.type === "success" ? "bg-[#a8b898] text-[#000000]" : "bg-[#d8a8a8] text-[#550000]"
-              }`}
-            >
-              {licMsg.text}
-            </div>
-          )}
-
-          <div className="space-y-2">
-            <label className="block text-xs font-black text-[#000000]">كود الجهاز المرسل من العميل</label>
-            <div className="flex gap-2">
-              <input
-                value={licCode}
-                onChange={(e) => { setLicCode(e.target.value.toUpperCase()); if (licMsg.text) setLicMsg({ type: "", text: "" }); }}
-                onKeyDown={(e) => { if (e.key === "Enter") handleGenerateLicense(); }}
-                placeholder="CAP-0000-0000-0000"
-                spellCheck={false}
-                autoComplete="off"
-                dir="ltr"
-                className="flex-1 min-w-0 p-2.5 bg-[#b8bcb2] border border-[#888888] font-mono font-bold text-sm focus:outline-none"
-              />
-              <button
-                onClick={handleGenerateLicense}
-                disabled={isGenLic}
-                className="h-[42px] px-5 bg-[#222222] hover:bg-[#000000] text-[#c3c6bb] font-extrabold text-xs flex items-center gap-2 cursor-pointer disabled:opacity-60 shrink-0"
-              >
-                <KeyRound size={15} />
-                <span>{isGenLic ? "جارٍ التوليد..." : "توليد المفتاح"}</span>
-              </button>
-            </div>
-          </div>
-
-          {licKey && (
-            <div className="space-y-2 pt-1">
-              <label className="block text-xs font-black text-[#000000]">مفتاح التفعيل — أرسله للعميل</label>
-              <div className="flex gap-2 items-stretch">
-                <textarea
-                  value={licKey}
-                  readOnly
-                  rows={3}
-                  dir="ltr"
-                  className="flex-1 min-w-0 p-2.5 bg-[#b8bcb2] border border-[#888888] font-mono text-[11px] leading-relaxed focus:outline-none resize-none"
-                />
-                <button
-                  onClick={handleCopyLicenseKey}
-                  className={`w-[92px] shrink-0 font-extrabold text-xs flex flex-col items-center justify-center gap-1.5 cursor-pointer transition-colors ${
-                    copiedLic ? "bg-[#a8b898] text-[#000000]" : "bg-[#222222] hover:bg-[#000000] text-[#c3c6bb]"
-                  }`}
-                >
-                  {copiedLic ? <Check size={16} /> : <Copy size={16} />}
-                  <span>{copiedLic ? "تم النسخ" : "نسخ"}</span>
-                </button>
-              </div>
-            </div>
-          )}
-
-          <div className="border-t border-[#888888] pt-3 mt-3">
-            <p className="text-[11px] text-[#555555] font-semibold leading-relaxed">
-              <b>للأمر المباشر من الطرفية:</b>{" "}
-              <span className="font-mono bg-[#b8bcb2] px-1.5 py-0.5" dir="ltr">node D:\CaptainPOS\gen-license.cjs CAP-XXXX-XXXX-XXXX</span>
-            </p>
-          </div>
-        </div>
-      )}
-
+      {/* SUB-TAB 6: LICENSE CENTER (مُستدعى كمربع منفر) */}
+      {showLicenseCenter && <LicenseCenter onClose={() => setShowLicenseCenter(false)} />}
     </div>
   );
 }

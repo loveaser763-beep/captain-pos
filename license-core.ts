@@ -128,3 +128,81 @@ export function activateLicense(
   }
   return { ok: true, status: licenseStatus(dataDir) };
 }
+
+// ============================================================================
+//  سجل التفعيلات — يُخزَّن عند المالك فقط (لا يُشحن مع البرنامج أبدًا)
+// ============================================================================
+export type IssuedEntry = {
+  code: string;
+  note: string;
+  firstIssued: string;
+  lastIssued: string;
+  count: number;
+  revoked: boolean;
+};
+
+function keysDirOf(): string {
+  return process.env.CAPTAIN_KEYS_DIR || "D:/CaptainPOS-KEYS";
+}
+
+function logPath(): string {
+  return path.join(keysDirOf(), "issued-keys.json");
+}
+
+export function loadIssuedLog(): IssuedEntry[] {
+  try {
+    const raw = JSON.parse(fs.readFileSync(logPath(), "utf8"));
+    return Array.isArray(raw) ? raw : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveIssuedLog(list: IssuedEntry[]): void {
+  const dir = keysDirOf();
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(logPath(), JSON.stringify(list, null, 2), { mode: 0o600 });
+}
+
+// يسجّل إصدار مفتاح ويُعيد المدخل + هل الكود صدر منه قبل كده
+export function recordIssued(code: string, note: string): { entry: IssuedEntry; duplicate: boolean } {
+  const list = loadIssuedLog();
+  const now = new Date().toISOString();
+  const found = list.find((e) => e.code === code);
+  if (found) {
+    found.lastIssued = now;
+    found.count = (found.count || 1) + 1;
+    if (note && note.trim()) found.note = note.trim();
+    saveIssuedLog(list);
+    return { entry: found, duplicate: true };
+  }
+  const entry: IssuedEntry = {
+    code,
+    note: (note || "").trim(),
+    firstIssued: now,
+    lastIssued: now,
+    count: 1,
+    revoked: false,
+  };
+  list.unshift(entry);
+  saveIssuedLog(list);
+  return { entry, duplicate: false };
+}
+
+export function updateIssuedNote(code: string, note: string): IssuedEntry | null {
+  const list = loadIssuedLog();
+  const e = list.find((x) => x.code === code);
+  if (!e) return null;
+  e.note = note.trim();
+  saveIssuedLog(list);
+  return e;
+}
+
+export function setIssuedRevoked(code: string, revoked: boolean): IssuedEntry | null {
+  const list = loadIssuedLog();
+  const e = list.find((x) => x.code === code);
+  if (!e) return null;
+  e.revoked = revoked;
+  saveIssuedLog(list);
+  return e;
+}

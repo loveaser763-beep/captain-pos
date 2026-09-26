@@ -8,7 +8,7 @@ import crypto from "crypto";
 import { execFile } from "child_process";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import { licenseStatus, activateLicense } from "./license-core";
+import { licenseStatus, activateLicense, loadIssuedLog, recordIssued, updateIssuedNote, setIssuedRevoked } from "./license-core";
 // ملحوظة: vite تُستورد ديناميكياً داخل وضع التطوير فقط — نسخة التشغيل المجمّعة لا تعتمد عليها.
 
 const _currentDir = typeof __dirname !== 'undefined' ? __dirname : path.dirname(process.argv[1] || '.');
@@ -1919,6 +1919,7 @@ async function startServer() {
   // يقرأ المفتاح الخاص من مسار خارج المشروع — فلا يعمل على حزمة العميل إطلاقًا
   app.post("/api/developer/license/generate", requireAuth, requireAdmin, (req, res) => {
     const code = String(req.body?.code || "").trim().toUpperCase();
+    const note = String(req.body?.note || "");
     if (!/^CAP-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$/.test(code)) {
       return res.status(400).json({ ok: false, error: "صيغة كود الجهاز غلط — الصيغة: CAP-XXXX-XXXX-XXXX" });
     }
@@ -1936,9 +1937,46 @@ async function startServer() {
       if (!crypto.verify(null, Buffer.from(code, "utf8"), pub, sig)) {
         return res.status(500).json({ ok: false, error: "التوقيع لم يجتز التحقق" });
       }
-      return res.json({ ok: true, code, key });
+      let rec: any = null;
+      let duplicate = false;
+      try {
+        const r = recordIssued(code, note);
+        rec = r.entry;
+        duplicate = r.duplicate;
+      } catch { /* السجل اختياري — التوليد ينجح حتى لو تعذّر */ }
+      return res.json({ ok: true, code, key, duplicate, record: rec });
     } catch (e: any) {
       return res.status(500).json({ ok: false, error: String(e?.message || e) });
+    }
+  });
+
+  // API - قراءة سجل التفعيلات المُصدَرة
+  app.get("/api/developer/license/log", requireAuth, requireAdmin, (_req, res) => {
+    try { res.json({ ok: true, entries: loadIssuedLog() }); }
+    catch (e: any) { res.status(500).json({ ok: false, error: String(e?.message || e) }); }
+  });
+
+  // API - تعديل ملاحظة سجل تفعيل
+  app.post("/api/developer/license/log/note", requireAuth, requireAdmin, (req, res) => {
+    try {
+      const code = String(req.body?.code || "").trim().toUpperCase();
+      const e = updateIssuedNote(code, String(req.body?.note || ""));
+      if (!e) return res.status(404).json({ ok: false, error: "الكود مش موجود في السجل" });
+      return res.json({ ok: true, entry: e });
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: String(err?.message || err) });
+    }
+  });
+
+  // API - تعليم/إلغاء تعليم "مرفوض" على تفعيل
+  app.post("/api/developer/license/log/revoke", requireAuth, requireAdmin, (req, res) => {
+    try {
+      const code = String(req.body?.code || "").trim().toUpperCase();
+      const e = setIssuedRevoked(code, !!req.body?.revoked);
+      if (!e) return res.status(404).json({ ok: false, error: "الكود مش موجود في السجل" });
+      return res.json({ ok: true, entry: e });
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: String(err?.message || err) });
     }
   });
 
