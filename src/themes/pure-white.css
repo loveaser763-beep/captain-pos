@@ -7,15 +7,17 @@
   --bg-sidebar: #FFFFFF;
   --text-primary: #000000;
   --text-secondary: #495057;
-  --text-muted: #868E96;
-  --accent: #228BE6;
-  --accent-hover: #339AF0;
-  --accent-glow: rgba(34,139,230,0.15);
-  --accent-subtle: rgba(34,139,230,0.06);
-  --primary: #228BE6;
-  --success: #2F9E44;
-  --warning: #F08C00;
-  --danger: #E03131;
+  /* #868E96 كان 3.32:1 على الأبيض → فاشل WCAG AA. #5F6B7A = 5.42:1 على
+     الكارت و 4.87:1 على إنبوت، ويفضل أفتح من --text-secondary (8.27:1). */
+  --text-muted: #5F6B7A;
+  --accent: #1971C2;
+  --accent-hover: #1C7ED6;
+  --accent-glow: rgba(25, 113, 194, 0.15);
+  --accent-subtle: rgba(25, 113, 194, 0.06);
+  --primary: #1971C2;
+  --success: #15803D;
+  --warning: #B45309;
+  --danger: #B91C1C;
   --border: #DEE2E6;
   --border-strong: #ADB5BD;
   --shadow: 0 1px 3px rgba(0,0,0,0.08);
@@ -24,6 +26,6 @@
   --radius: 8px;
   --radius-sm: 6px;
   --gradient-card: linear-gradient(180deg, #FFFFFF, #F8F9FA);
-  --gradient-accent: linear-gradient(135deg, #228BE6, #339AF0);
+  --gradient-accent: linear-gradient(135deg, #1971C2, #228BE6);
   --gradient-header: linear-gradient(90deg, #FFFFFF, #F8F9FA);
 }

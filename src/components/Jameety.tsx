@@ -14,6 +14,7 @@ import {
   Lock,
 } from "lucide-react";
 import UnifiedPrintButton from "./UnifiedPrintButton";
+import { isZestyHidden } from "../hideZesty";
 
 import InventoryTab from "./jameety/InventoryTab";
 import DebtsTab from "./jameety/DebtsTab";
@@ -59,10 +60,14 @@ export default function Jameety({ initialEntity: initialEntityProp, key }: { key
   // ===== State =====
   const [tab, setTab] = useState<JTab>("inventory");
   const storedEntity: Entity = (() => {
-    try { return localStorage.getItem("lux_entity") === "zesty" ? "zesty" : "jameety"; }
+    try {
+      if (isZestyHidden()) return "jameety";
+      return localStorage.getItem("lux_entity") === "zesty" ? "zesty" : "jameety";
+    }
     catch { return "jameety"; }
   })();
-  const [entity, setEntity] = useState<Entity>(initialEntityProp ?? storedEntity);
+  const safeInitial = initialEntityProp === "zesty" && isZestyHidden() ? "jameety" : initialEntityProp;
+  const [entity, setEntity] = useState<Entity>(safeInitial ?? storedEntity);
   // كل كيان له شهره وسنته الخاصة (غير مرتبطين ببعض)
   const readPeriod = (e: Entity): { m: string; y: string } => {
     try {
@@ -102,7 +107,8 @@ export default function Jameety({ initialEntity: initialEntityProp, key }: { key
 
   // مزامنة الكيان القادم من القائمة الجانبية
   useEffect(() => {
-    if (initialEntityProp && initialEntityProp !== entity) switchEntity(initialEntityProp);
+    const eff = initialEntityProp === "zesty" && isZestyHidden() ? "jameety" : initialEntityProp;
+    if (eff && eff !== entity) switchEntity(eff);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialEntityProp]);
 

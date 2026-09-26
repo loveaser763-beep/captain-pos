@@ -268,8 +268,8 @@ export default function Suppliers({ currentUser }: SuppliersProps) {
                 {/* Linked metrics */}
                 {(() => {
                   const supItems = items.filter(i => i.supplier_id === sup.id || i.supplier_name === sup.name);
-                  const supInvoices = purchaseInvoices.filter(inv => inv.customer_name === sup.name);
-                  const totalPurchasesAmount = supInvoices.reduce((sum, inv) => sum + (inv.total_amount || 0), 0);
+                  const supInvoices = purchaseInvoices.filter(inv => inv.customer_supplier_name === sup.name);
+                  const totalPurchasesAmount = supInvoices.reduce((sum, inv) => sum + (inv.total || 0), 0);
 
                   return (
                     <div className="space-y-2 pt-2 border-t border-[#888888]">
@@ -357,7 +357,7 @@ export default function Suppliers({ currentUser }: SuppliersProps) {
                 }`}
               >
                 <FileText size={14} strokeWidth={1.5} />
-                <span>فواتير الشراء ({purchaseInvoices.filter(inv => inv.customer_name === detailSupplier.name).length})</span>
+                <span>فواتير الشراء ({purchaseInvoices.filter(inv => inv.customer_supplier_name === detailSupplier.name).length})</span>
               </button>
             </div>
 
@@ -408,7 +408,7 @@ export default function Suppliers({ currentUser }: SuppliersProps) {
             {activeTab === "invoices" && (
               <div className="space-y-3">
                 {(() => {
-                  const linkedInvoices = purchaseInvoices.filter(inv => inv.customer_name === detailSupplier.name);
+                  const linkedInvoices = purchaseInvoices.filter(inv => inv.customer_supplier_name === detailSupplier.name);
                   if (linkedInvoices.length === 0) {
                     return (
                       <div className="p-8 text-center text-[#555555] font-bold text-xs">
@@ -434,16 +434,16 @@ export default function Suppliers({ currentUser }: SuppliersProps) {
                             <tr key={inv.id} className="hover:bg-[#b8bcb2] transition-colors">
                               <td className="py-3 px-4 font-mono whitespace-nowrap">{inv.invoice_number}</td>
                               <td className="py-3 px-4 font-mono whitespace-nowrap">{inv.date}</td>
-                              <td className="py-3 px-4 text-center font-extrabold font-mono whitespace-nowrap">{(inv.total_amount || 0).toFixed(2)} ج.م</td>
-                              <td className="py-3 px-4 text-center font-mono whitespace-nowrap">{(inv.paid_amount || 0).toFixed(2)} ج.م</td>
-                              <td className="py-3 px-4 text-center font-mono whitespace-nowrap">{(inv.remaining_amount || 0).toFixed(2)} ج.م</td>
+                              <td className="py-3 px-4 text-center font-extrabold font-mono whitespace-nowrap">{(inv.total || 0).toFixed(2)} ج.م</td>
+                              <td className="py-3 px-4 text-center font-mono whitespace-nowrap">{(inv.paid || 0).toFixed(2)} ج.م</td>
+                              <td className="py-3 px-4 text-center font-mono whitespace-nowrap">{(inv.remaining || 0).toFixed(2)} ج.م</td>
                               <td className="py-3 px-4 text-center whitespace-nowrap">
                                 <span className={`px-2 py-0.5 text-xs font-bold border ${
-                                  inv.remaining_amount === 0 
+                                  Number(inv.remaining || 0) === 0
                                     ? "bg-[#b8bcb2] border-[#888888] text-[#000000]"
                                     : "bg-[#222222] text-[#c3c6bb]"
                                 }`}>
-                                  {inv.remaining_amount === 0 ? "خالصة" : "آجل"}
+                                  {Number(inv.remaining || 0) === 0 ? "خالصة" : "آجل"}
                                 </span>
                               </td>
                             </tr>

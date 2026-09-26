@@ -3,24 +3,28 @@ import { Palette, Check } from "lucide-react";
 import { authFetch } from "../authFetch";
 
 export const THEMES = [
-  { id: "royal-captain", name: "Royal Captain", emoji: "🏆", desc: "ذهبي + كحلي" },
-  { id: "midnight-emerald", name: "Midnight Emerald", emoji: "💎", desc: "أخضر زمردي + أسود" },
-  { id: "platinum-navy", name: "Platinum Navy", emoji: "⚡", desc: "نيلي + أسود" },
-  { id: "obsidian-platinum", name: "Obsidian Platinum", emoji: "🖤", desc: "فضة + أسود" },
-  { id: "midnight-sapphire", name: "Midnight Sapphire", emoji: "💙", desc: "أزرق ياقوتي + كحلي" },
-  { id: "velvet-noir", name: "Velvet Noir", emoji: "🟣", desc: "بنفسجي + أسود" },
   { id: "pure-white", name: "Pure White", emoji: "☀️", desc: "أبيض ناصع + أسود" },
+  { id: "nordic-mist", name: "Nordic Mist", emoji: "🌫️", desc: "رمادي فاتح + تركوازي" },
+  { id: "warm-ivory", name: "Warm Ivory", emoji: "🌾", desc: "عاجي دافئ + كهرماني" },
+  { id: "captain-nocturne", name: "Captain Nocturne", emoji: "🏆", desc: "كحلي ليلي + ذهبي" },
 ] as const;
 
 export type ThemeId = typeof THEMES[number]["id"];
 
-export function applyTheme(id: ThemeId) {
-  document.documentElement.setAttribute("data-theme", id);
-  localStorage.setItem("captain-theme", id);
+export function applyTheme(id: ThemeId, persist = false) {
+  const safe = (THEMES.some((t) => t.id === id) ? id : "pure-white") as ThemeId;
+  document.documentElement.setAttribute("data-theme", safe);
+  if (persist) {
+    authFetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ settings: { ui_theme: safe }, user_name: "النظام" }),
+    }).catch(() => {});
+  }
 }
 
 export function getSavedTheme(): ThemeId {
-  return (localStorage.getItem("captain-theme") as ThemeId) || "royal-captain";
+  return "pure-white";
 }
 
 export default function ThemeSwitcher() {
@@ -47,7 +51,7 @@ export default function ThemeSwitcher() {
     authFetch("/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ settings: { theme: id }, user_name: "النظام" }),
+      body: JSON.stringify({ settings: { theme: id, ui_theme: id }, user_name: "النظام" }),
     }).catch(() => {});
   };
 

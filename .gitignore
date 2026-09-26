@@ -8,6 +8,7 @@ database.sqlite-shm
 database.sqlite-wal
 *.log
 .env
+.captain-jwt-secret
 public/zesty-data/
 public/jameety-data/
 src/components/jameety/data/

@@ -44,6 +44,7 @@ export interface InvoiceItem {
   total: number;
   is_unlimited?: number;
   stock_quantity?: number;
+  low_stock_limit?: number;
 }
 
 export interface Invoice {

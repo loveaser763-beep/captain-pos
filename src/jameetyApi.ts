@@ -1,13 +1,15 @@
 // jameetyApi.ts — API helper for reading/writing Jameety/Zesty data to SQLite
 // No localStorage, no monkey-patching, just clean API calls.
 
+import { authFetch } from "./authFetch";
+
 export type EntityNs = "jameety" | "zesty";
 
 const BASE = "/api/jameety-kv";
 
 /** GET — read all keys for a namespace */
 export async function pullAll(ns: EntityNs): Promise<Record<string, string>> {
-  const res = await fetch(`${BASE}?ns=${ns}`);
+  const res = await authFetch(`${BASE}?ns=${ns}`);
   const json = await res.json();
   return json.success ? json.data : {};
 }
@@ -48,7 +50,7 @@ export async function getObj<T>(ns: EntityNs, key: string): Promise<T | null> {
 
 /** POST — write/update keys */
 export async function setKeys(ns: EntityNs, entries: Record<string, string>): Promise<void> {
-  await fetch(BASE, {
+  await authFetch(BASE, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ns, entries }),
@@ -67,7 +69,7 @@ export async function setStr(ns: EntityNs, key: string, value: string): Promise<
 
 /** POST — delete keys */
 export async function delKeys(ns: EntityNs, keys: string[]): Promise<void> {
-  await fetch(`${BASE}/delete`, {
+  await authFetch(`${BASE}/delete`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ns, keys }),

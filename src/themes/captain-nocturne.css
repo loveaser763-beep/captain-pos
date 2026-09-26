@@ -1,0 +1,29 @@
+/* Captain Nocturne - كحلي ليلي + ذهبي (فخامة عالية التباين) */
+[data-theme="captain-nocturne"] {
+  --bg-deep: #0D1219;
+  --bg-card: #151C26;
+  --bg-card-hover: #1C2531;
+  --bg-input: #1F2A38;
+  --bg-sidebar: #10161F;
+  --text-primary: #F4F7FA;
+  --text-secondary: #B3BDCC;
+  --text-muted: #8A97A8;
+  --accent: #E5B84B;
+  --accent-hover: #F2CB6B;
+  --accent-glow: rgba(229, 184, 75, 0.22);
+  --accent-subtle: rgba(229, 184, 75, 0.1);
+  --primary: #60A5FA;
+  --success: #34D399;
+  --warning: #FBBF24;
+  --danger: #F87171;
+  --border: rgba(229, 184, 75, 0.16);
+  --border-strong: rgba(229, 184, 75, 0.34);
+  --shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  --shadow-sm: 0 4px 16px rgba(0, 0, 0, 0.35);
+  --shadow-glow: 0 0 20px rgba(229, 184, 75, 0.16);
+  --radius: 14px;
+  --radius-sm: 9px;
+  --gradient-card: linear-gradient(160deg, rgba(21, 28, 38, 0.92), rgba(13, 18, 25, 0.97));
+  --gradient-accent: linear-gradient(135deg, #E5B84B, #F2CB6B);
+  --gradient-header: linear-gradient(90deg, #0D1219, #151C26);
+}

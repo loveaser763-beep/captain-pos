@@ -184,6 +184,15 @@ function createWindow() {
   ipcMain.on('window-minimize', () => { if (mainWindow) mainWindow.minimize(); });
   ipcMain.on('window-maximize', () => { if (mainWindow) { if (mainWindow.isMaximized()) mainWindow.unmaximize(); else mainWindow.maximize(); }});
   ipcMain.on('window-close', () => { if (mainWindow) mainWindow.close(); });
+  // إعادة التركيز الجذري من العملية الرئيسية (حوارات النظام بتسرق الفوكس ولا يرجع بـ window.focus)
+  ipcMain.on('window-refocus', () => {
+    try {
+      if (!mainWindow) return;
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+      if (mainWindow.webContents) mainWindow.webContents.focus();
+    } catch {}
+  });
 
   // حفظ/استرجاع/مسح الجلسة من ملف على القرص
   const sessionFile = () => path.join(app.getPath('userData'), 'captain-session.json');

@@ -4,6 +4,7 @@ import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import sqlite3 from "sqlite3";
+import crypto from "crypto";
 import { execFile } from "child_process";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
@@ -15,9 +16,33 @@ async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
 
-  // JWT Secret — ثابت للتطبيق (ممكن يتغير من Environment Variable)
-  const JWT_SECRET = process.env.JWT_SECRET || "captain-pos-secret-key-2024";
-  const JWT_EXPIRY = "8h";
+  // JWT Secret — سر عشوائي واحد يُولَّد عند أول تشغيلة ويُحفظ في مجلد الداتا
+  // (ممكن يتتجاوز من Environment Variable JWT_SECRET)
+  // الإصدار القديم كان "captain-pos-secret-key-2024" وكان منشورًا داخل كل نسخة مبنية،
+  // يعني أي حد عنده مجلد dist كان يقدر يوقّع توكن صالح ويتحاكي لأي مستخدم.
+  // تغييره = تسجيل دخول واحد فقط بعد التحديث (التوكنات القديمة تبقى باطلة).
+  const loadJwtSecret = (): string => {
+    const fromEnv = process.env.JWT_SECRET;
+    if (fromEnv && fromEnv.trim()) return fromEnv.trim();
+    const dir = process.env.CAPTAIN_DATA_DIR || process.cwd();
+    const file = path.join(dir, ".captain-jwt-secret");
+    try {
+      const existing = fs.readFileSync(file, "utf8").trim();
+      if (existing) return existing;
+    } catch {}
+    const generated = crypto.randomBytes(48).toString("hex");
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(file, generated, { mode: 0o600 });
+      console.log("[Auth] Generated a new JWT secret →", file);
+    } catch (e) {
+      // مجلد الداتا غير قابل للكتابة — هنستخدم سر مؤقت للجلسة دي بس (يضيع عند إعادة التشغيل)
+      console.warn("[Auth] Could not persist JWT secret, using an ephemeral one:", e);
+    }
+    return generated;
+  };
+  const JWT_SECRET = loadJwtSecret();
+  const JWT_EXPIRY = "30d";
 
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ extended: true, limit: "50mb" }));
@@ -38,13 +63,43 @@ async function startServer() {
     }
   };
 
-  // Admin-only Middleware
+  // Admin-only Middleware (developer role has full access too)
   const requireAdmin = (req: any, res: any, next: any) => {
-    if (req.user?.role !== "admin") {
+    if (req.user?.role !== "admin" && req.user?.role !== "developer") {
       return res.status(403).json({ error: "محتاج صلاحيات Admin" });
     }
     next();
   };
+
+  // ============================================
+  // بوابة الأمان العامة — كل /api محمي ما لم يُستثنى صراحةً
+  // (كان فيه 111 مسار، منهم 11 بس عليهم requireAuth يدوي — والباقي كله مفتوح)
+  // ============================================
+  const PUBLIC_API = new Set(["POST /api/auth/login"]);
+  app.use("/api", (req, res, next) => {
+    const url = (req.originalUrl || "").split("?")[0];
+    if (PUBLIC_API.has(`${req.method} ${url}`)) return next();
+    return requireAuth(req, res, next);
+  });
+
+  // تقييد محاولات تسجيل الدخول — عدّاد في الذاكرة (5 محاولات فاشلة/دقيقة/IP)
+  // بدون أي تبعية جديدة. بعد كده 429 لمدة الدقيقة.
+  const LOGIN_WINDOW_MS = 60_000;
+  const LOGIN_MAX_ATTEMPTS = 5;
+  const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+  const loginKey = (req: any) => req.ip || req.socket?.remoteAddress || "unknown";
+  const loginBlocked = (key: string): boolean => {
+    const rec = loginAttempts.get(key);
+    if (!rec || rec.resetAt < Date.now()) { loginAttempts.delete(key); return false; }
+    return rec.count >= LOGIN_MAX_ATTEMPTS;
+  };
+  const loginFailed = (key: string): void => {
+    const now = Date.now();
+    const rec = loginAttempts.get(key);
+    if (!rec || rec.resetAt < now) loginAttempts.set(key, { count: 1, resetAt: now + LOGIN_WINDOW_MS });
+    else rec.count++;
+  };
+  const loginSucceeded = (key: string): void => { loginAttempts.delete(key); };
 
   // مجلد البيانات: في نسخة التشغيل المجمّعة يأتي من CAPTAIN_DATA_DIR (مجلد كتابة مضمون)،
   // وفي وضع التطوير يبقى مجلد العمل الحالي.
@@ -114,8 +169,8 @@ async function startServer() {
       quantity INTEGER,
       unit TEXT,
       low_stock_limit INTEGER,
-      category TEXT DEFAULT 'عام'
-      ,supplier TEXT DEFAULT ''
+       category TEXT DEFAULT 'عام'
+       ,supplier TEXT DEFAULT ''
     )
   `);
 
@@ -172,6 +227,8 @@ async function startServer() {
       purchase_percentage REAL DEFAULT 0
     )
   `);
+  // هجرة: حصة ربح ثابتة بالجنيه (تتفعل مرة واحدة)
+  try { await dbRun("ALTER TABLE partners ADD COLUMN fixed_profit_amount REAL DEFAULT 0"); } catch {}
 
   await dbRun(`
     CREATE TABLE IF NOT EXISTS expenses (
@@ -336,6 +393,14 @@ async function startServer() {
       await dbRun("ALTER TABLE tamween_customers ADD COLUMN status_month TEXT DEFAULT ''");
       console.log("[Migration] Added 'status_month' column");
     }
+    if (!colNames.includes("pending_sale_json")) {
+      await dbRun("ALTER TABLE tamween_customers ADD COLUMN pending_sale_json TEXT DEFAULT ''");
+      console.log("[Migration] Added 'pending_sale_json' column");
+    }
+    if (!colNames.includes("withdrawn_at")) {
+      await dbRun("ALTER TABLE tamween_customers ADD COLUMN withdrawn_at TEXT DEFAULT ''");
+      console.log("[Migration] Added 'withdrawn_at' column");
+    }
   } catch (e: any) {
     console.log("[Migration] tamween_customers table might not exist, will be created by CREATE TABLE IF NOT EXISTS above");
   }
@@ -363,6 +428,18 @@ async function startServer() {
     if (!invColNames.includes("bonus")) {
       await dbRun("ALTER TABLE invoices ADD COLUMN bonus REAL DEFAULT 0");
       console.log("[Migration] Added 'bonus' column to invoices");
+    }
+    if (!invColNames.includes("tamween_customer_id")) {
+      await dbRun("ALTER TABLE invoices ADD COLUMN tamween_customer_id INTEGER DEFAULT NULL");
+      console.log("[Migration] Added 'tamween_customer_id' column to invoices");
+    }
+    if (!invColNames.includes("secret_number")) {
+      await dbRun("ALTER TABLE invoices ADD COLUMN secret_number TEXT DEFAULT ''");
+      console.log("[Migration] Added 'secret_number' column to invoices");
+    }
+    if (!invColNames.includes("payment_method")) {
+      await dbRun("ALTER TABLE invoices ADD COLUMN payment_method TEXT DEFAULT 'cash'");
+      console.log("[Migration] Added 'payment_method' column to invoices");
     }
   } catch (e: any) {
     console.log("[Migration] invoices bread_points/bonus migration skipped:", e.message);
@@ -434,6 +511,30 @@ async function startServer() {
     // Column already exists, ignore
   }
 
+  // Monthly opening balances for Tamween carry-over (رصيد أول المدة المرحّل)
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS tamween_month_openings (
+      month TEXT PRIMARY KEY,
+      opening_balance REAL DEFAULT 0,
+      updated_at TEXT
+    )
+  `);
+
+  // Machine daily sales entered manually for month-end reconciliation (مطابقة مبيعات الماكينة)
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS machine_daily_sales (
+      day TEXT PRIMARY KEY,
+      total REAL DEFAULT 0,
+      note TEXT DEFAULT '',
+      updated_at TEXT
+    )
+  `);
+
+  // مطابقة سمارت — إجمالي مبيعات سمارت + قيمة الدعم من سمارت + الفرق (يدوي/مقترح تلقائي)
+  try { await dbRun("ALTER TABLE machine_daily_sales ADD COLUMN smart_sales REAL"); } catch {}
+  try { await dbRun("ALTER TABLE machine_daily_sales ADD COLUMN smart_support REAL"); } catch {}
+  try { await dbRun("ALTER TABLE machine_daily_sales ADD COLUMN smart_diff REAL"); } catch {}
+
   // Create tamween_products table for tracking منتجات التموين
   await dbRun(`
     CREATE TABLE IF NOT EXISTS tamween_products (
@@ -454,7 +555,7 @@ async function startServer() {
   await dbRun(`
     CREATE TABLE IF NOT EXISTS held_invoices (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      tab_index INTEGER,
+      tab_index INTEGER UNIQUE,
       cart_json TEXT,
       customer_name TEXT,
       secret_number TEXT,
@@ -472,6 +573,36 @@ async function startServer() {
       created_at TEXT
     )
   `);
+
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS active_carts (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      cart_json TEXT DEFAULT '[]',
+      customer_name TEXT DEFAULT '',
+      secret_number TEXT DEFAULT '',
+      sale_type TEXT DEFAULT 'retail',
+      payment_method TEXT DEFAULT 'cash',
+      payment_source TEXT DEFAULT 'cash_register',
+      discount REAL DEFAULT 0,
+      tamween_cards_json TEXT DEFAULT '[]',
+      bread_points REAL DEFAULT 0,
+      bonus REAL DEFAULT 0,
+      paid REAL DEFAULT 0,
+      invoice_number TEXT DEFAULT '',
+      date TEXT DEFAULT '',
+      active_tab_index INTEGER DEFAULT 0
+    )
+  `);
+
+  // Migration: held_invoices.tab_index must be UNIQUE for INSERT OR REPLACE upsert.
+  // Dedupe legacy duplicates first (keep latest row per tab), then create the index.
+  try {
+    await dbRun("DELETE FROM held_invoices WHERE id NOT IN (SELECT MAX(id) FROM held_invoices GROUP BY tab_index)");
+    await dbRun("CREATE UNIQUE INDEX IF NOT EXISTS ux_held_tab ON held_invoices(tab_index)");
+    console.log("[Migration] held_invoices.tab_index unique enforced");
+  } catch (e: any) {
+    console.log("[Migration] held_invoices unique index skipped:", e.message);
+  }
 
   // Function to seed 100+ realistic products, suppliers, invoices and data
   async function seed100ItemsAndFullData() {
@@ -779,8 +910,36 @@ async function startServer() {
   }
 
   // Auto-seed DISABLED by owner - project starts empty except Jameety
+  // NOTE: default login users must still be created, otherwise nobody can log in.
 
-  // Ensure Developer Account (innocode / yrcode) always exists
+  // Ensure default Users exist even when auto-seed is disabled
+  try {
+    const usersCount = await dbGet("SELECT COUNT(*) as count FROM users");
+    if (usersCount.count === 0) {
+      const adminPermissions = JSON.stringify(["sales", "purchases", "items", "suppliers", "reports", "users"]);
+      const cashierPermissions = JSON.stringify(["sales"]);
+      const storekeeperPermissions = JSON.stringify(["purchases", "items", "suppliers"]);
+      const hashedAdmin = await bcrypt.hash("admin123", 10);
+      const hashedCashier = await bcrypt.hash("cashier123", 10);
+      const hashedStore = await bcrypt.hash("store123", 10);
+      await dbRun(
+        "INSERT INTO users (username, password, name, role, permissions) VALUES (?, ?, ?, ?, ?)",
+        ["admin", hashedAdmin, "آسر المدير العام", "admin", adminPermissions]
+      );
+      await dbRun(
+        "INSERT INTO users (username, password, name, role, permissions) VALUES (?, ?, ?, ?, ?)",
+        ["cashier", hashedCashier, "إياد الكاشير", "cashier", cashierPermissions]
+      );
+      await dbRun(
+        "INSERT INTO users (username, password, name, role, permissions) VALUES (?, ?, ?, ?, ?)",
+        ["store", hashedStore, "ياسين أمين المخزن", "storekeeper", storekeeperPermissions]
+      );
+    }
+  } catch (err) {
+    console.error("Error ensuring default users:", err);
+  }
+
+  // Ensure Developer Account (Elkapten / ME561128) always exists
   try {
     const devPermissions = JSON.stringify([
       "sales", "purchases", "items", "suppliers", "reports", "users", "developer",
@@ -788,21 +947,19 @@ async function startServer() {
     ]);
     const devUserExists = await dbGet("SELECT * FROM users WHERE username = ?", ["ME561128"]);
     if (!devUserExists) {
+      const hashedDev = await bcrypt.hash("561128", 10);
       await dbRun(
         "INSERT INTO users (username, password, name, role, permissions) VALUES (?, ?, ?, ?, ?)",
-        ["ME561128", "561128", "منظومة الكابتن — لهندسة الأرقام وريادة الأعمال - 01010561128", "developer", devPermissions]
+        ["ME561128", hashedDev, "منظومة الكابتن — لهندسة الأرقام وريادة الأعمال - 01010561128", "developer", devPermissions]
       );
-      // تنظيف الحساب القديم innocode لو موجود
-      await dbRun("DELETE FROM users WHERE username = ?", ["innocode"]);
-    } else {
-      await dbRun(
-        "UPDATE users SET password = ?, name = ?, role = 'developer', permissions = ? WHERE username = ?",
-        ["561128", "منظومة الكابتن — لهندسة الأرقام وريادة الأعمال - 01010561128", devPermissions, "ME561128"]
-      );
-      await dbRun("DELETE FROM users WHERE username = ?", ["innocode"]);
     }
+    // ملاحظة أمنية: كان فيه UPDATE بيرجّع كلمة السر لـ"561128" عند كل تشغيلة
+    // (أي تعديل للمستخدم بيتلغي) — اتشال عمدًا. وكمان كان فيه DELETE بيمسح أي
+    // حساب developer غير ME561128 عند كل تشغيلة — اتشال برضه بأمر المالك.
+    // تنظيف أي حساب مبرمج قديم غير حساب ME561128 الحالي — اتشال بأمر المالك:
+    // كان بيمسح أي حساب developer تاني عند كل تشغيلة من غير سبب (فقدان بيانات).
   } catch (err) {
-    console.error("Error syncing innocode developer account:", err);
+    console.error("Error syncing developer account:", err);
   }
 
   // Standalone seed for Partners and Expenses (DISABLED)
@@ -816,7 +973,7 @@ async function startServer() {
   // ============================================
   // API - SYNC FROM LOCALSTORAGE
   // ============================================
-  app.post("/api/sync-from-local", async (req, res) => {
+  app.post("/api/sync-from-local", requireAuth, requireAdmin, async (req, res) => {
     try {
       // المزامنة التلقائية معطلة بقرار المالك - تتطلب تأكيداً صريحاً
       if ((req.body as any)?.confirmed !== true) {
@@ -929,17 +1086,24 @@ async function startServer() {
   app.post("/api/auth/login", async (req, res) => {
     try {
       const { username, password } = req.body;
+      const lk = loginKey(req);
+      if (loginBlocked(lk)) {
+        return res.status(429).json({ success: false, message: "كثير محاولات الدخول — استنى دقيقة وحاول تاني" });
+      }
       // جلب المستخدم بالاسم فقط
       const user = await dbGet("SELECT id, username, password, name, role, permissions FROM users WHERE username = ?", [username]);
       if (!user) {
+        loginFailed(lk);
         return res.status(401).json({ success: false, message: "اسم المستخدم أو كلمة المرور غير صحيحة" });
       }
-      
+
       // مقارنة كلمة السور المشوشه
       const passwordMatch = await bcrypt.compare(password, user.password);
       if (!passwordMatch) {
+        loginFailed(lk);
         return res.status(401).json({ success: false, message: "اسم المستخدم أو كلمة المرور غير صحيحة" });
       }
+      loginSucceeded(lk);
 
       user.permissions = JSON.parse(user.permissions);
       
@@ -962,6 +1126,24 @@ async function startServer() {
       return res.json({ success: true, token, user: { id: user.id, username: user.username, name: user.name, role: user.role, permissions: user.permissions } });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  // API - Current user from token (disk-based session restore, no localStorage)
+  app.get("/api/auth/me", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ success: false });
+      }
+      const token = authHeader.split(" ")[1];
+      const decoded: any = jwt.verify(token, JWT_SECRET);
+      const user = await dbGet("SELECT id, username, name, role, permissions FROM users WHERE id = ?", [decoded.id]);
+      if (!user) return res.status(401).json({ success: false });
+      try { user.permissions = JSON.parse(user.permissions); } catch { user.permissions = []; }
+      return res.json({ success: true, user });
+    } catch (err: any) {
+      return res.status(401).json({ success: false });
     }
   });
 
@@ -1514,6 +1696,7 @@ async function startServer() {
         date,
         customer_name,
         payment_source, // e.g. 'cash_register'
+        payment_method, // cash | instapay | visa | vodafone
         sale_type, // 'retail' or 'wholesale'
         subtotal,
         tax,
@@ -1525,46 +1708,82 @@ async function startServer() {
         paid,
         remaining,
         items: invoiceItems,
-        created_by
+        created_by,
+        tamween_customer_id,
+        secret_number
       } = req.body;
 
       const created_at = new Date().toISOString();
       if (!invoice_number || !Array.isArray(invoiceItems) || invoiceItems.length === 0) {
         return res.status(400).json({ error: "بيانات الفاتورة غير مكتملة." });
       }
+      // حماية محاسبية صارمة: الإجمالي النهائي يجب أن يكون بالموجب دائماً
+      if (!(Number(total) > 0)) {
+        return res.status(400).json({ error: "لا يمكن حفظ الفاتورة — الإجمالي النهائي يجب أن يكون بالموجب." });
+      }
+      // كارت تموين: لا موافقة على البيع من غير الاسم والرقم السري والحافز (نقاط الخبز مش شرط)
+      if (Number(tamween_discount) > 0) {
+        if (!(customer_name || "").trim() || !(secret_number || "").trim() || !(Number(bonus) > 0)) {
+          return res.status(400).json({ error: "ملئ الحقول: الكارت التمويني يتطلب الاسم والرقم السري والحافز قبل الموافقة على البيع." });
+        }
+      }
       for (const item of invoiceItems) {
-        if (!item.barcode || isNaN(Number(item.quantity)) || Number(item.quantity) <= 0) {
-          return res.status(400).json({ error: "بيانات الأصناف غير صحيحة." });
+        // الباركود اختياري (أصناف بلا باركود مثل الحلاوة مسموحة) — المهم الاسم والكمية
+        if (!(item.name || "").trim() || isNaN(Number(item.quantity)) || Number(item.quantity) <= 0) {
+          return res.status(400).json({ error: "بيانات الأصناف غير صحيحة (الاسم والكمية مطلوبان)." });
         }
       }
 
       await dbRun(`
-        INSERT INTO invoices (invoice_number, type, date, customer_supplier_name, payment_source, sale_type, subtotal, tax, discount, tamween_discount, bread_points, bonus, total, paid, remaining, created_by, created_at)
-        VALUES (?, 'sales', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [invoice_number, date, customer_name, payment_source, sale_type, subtotal, tax, discount, tamween_discount || 0, bread_points || 0, bonus || 0, total, paid, remaining, created_by, created_at]);
+        INSERT INTO invoices (invoice_number, type, date, customer_supplier_name, payment_source, payment_method, sale_type, subtotal, tax, discount, tamween_discount, bread_points, bonus, total, paid, remaining, created_by, created_at, tamween_customer_id, secret_number)
+        VALUES (?, 'sales', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [invoice_number, date, customer_name, payment_source, payment_method || "cash", sale_type, subtotal, tax, discount, tamween_discount || 0, bread_points || 0, bonus || 0, total, paid, remaining, created_by, created_at, tamween_customer_id ?? null, secret_number ?? ""]);
 
       const invIdRow = await dbGet("SELECT last_insert_rowid() as id");
       const invoice_id = invIdRow.id;
 
+      // خصم قيمة الكارت من الاستعاضة: تسجيل صرف العميل لشهر البيع
+      if (Number(tamween_discount) > 0) {
+        const saleMonth = String(date || created_at).slice(0, 7);
+        let withdrawCustomerId = tamween_customer_id ?? null;
+        if (!withdrawCustomerId && (secret_number || "").trim()) {
+          const bySecret = await dbGet("SELECT id FROM tamween_customers WHERE secret_number = ?", [String(secret_number).trim()]);
+          if (bySecret) withdrawCustomerId = bySecret.id;
+        }
+        if (withdrawCustomerId) {
+          // عميل موجود: تعليم كمصروف لشهر البيع (صف واحد فقط → بدون ازدواج)
+          await dbRun("UPDATE tamween_customers SET status = 'withdrawn', status_month = ? WHERE id = ?", [saleMonth, withdrawCustomerId]);
+        } else {
+          // كارت جديد بدون عميل مسجل: إنشاء سجل صرف بقيمة الكارت
+          await dbRun(
+            "INSERT INTO tamween_customers (name, secret_number, phone, card_value, bread_points, status, status_month, created_at) VALUES (?, ?, '', ?, ?, 'withdrawn', ?, ?)",
+            [String(customer_name).trim(), String(secret_number).trim(), Number(tamween_discount), Number(bread_points) || 0, saleMonth, created_at]
+          );
+        }
+      }
+
       for (const item of invoiceItems) {
         // We need original purchase_price to record cost_price for profit calculation!
-        const product = await dbGet("SELECT purchase_price, quantity, is_unlimited FROM items WHERE barcode = ?", [item.barcode]);
+        // مطابقة بالباركود، وبالاسم للأصناف بلا باركود
+        const product = item.barcode
+          ? await dbGet("SELECT barcode, purchase_price, quantity, is_unlimited FROM items WHERE barcode = ?", [item.barcode])
+          : await dbGet("SELECT barcode, purchase_price, quantity, is_unlimited FROM items WHERE name = ?", [item.name]);
         const costPrice = product ? product.purchase_price : item.price;
 
         // Add item details
         await dbRun(`
           INSERT INTO invoice_items (invoice_id, barcode, name, quantity, unit, price, cost_price, total)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         `, [invoice_id, item.barcode, item.name, item.quantity, item.unit, item.price, costPrice, item.total]);
+         `, [invoice_id, item.barcode || "", item.name, item.quantity, item.unit, item.price, costPrice, item.total]);
 
         // Deduct inventory ONLY if not unlimited
         if (product && product.is_unlimited !== 1) {
           const newQty = Math.max(0, product.quantity - Number(item.quantity));
-          await dbRun("UPDATE items SET quantity = ? WHERE barcode = ?", [newQty, item.barcode]);
+          await dbRun("UPDATE items SET quantity = ? WHERE barcode = ?", [newQty, product.barcode]);
         }
       }
 
-      const tamweenMsg = tamween_discount > 0 ? ` | خصم تموين: ${tamween_discount}` : '';
+      const tamweenMsg = tamween_discount > 0 ? ` | خصم تموين: ${tamween_discount} (مخصوم من الاستعاضة)` : '';
       await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, 'فاتورة مبيعات', ?)", [
         new Date().toISOString(),
         created_by || "الكاشير",
@@ -1767,18 +1986,10 @@ async function startServer() {
         "sales", "purchases", "items", "suppliers", "reports", "users",
         "dashboard_stats", "view_purchases_invoices", "edit_invoice", "delete_invoice", "return_invoice"
       ]);
-      const devPermissions = JSON.stringify([
-        "sales", "purchases", "items", "suppliers", "reports", "users", "developer",
-        "dashboard_stats", "view_purchases_invoices", "edit_invoice", "delete_invoice", "return_invoice"
-      ]);
 
       await dbRun(
         "INSERT INTO users (username, password, name, role, permissions) VALUES (?, ?, ?, ?, ?)",
         ["admin", await bcrypt.hash("admin123", 10), "أحمد المدير العام", "admin", adminPermissions]
-      );
-      await dbRun(
-        "INSERT INTO users (username, password, name, role, permissions) VALUES (?, ?, ?, ?, ?)",
-        ["innocode", await bcrypt.hash("yrcode", 10), "مبرمج النظام (InnoCode)", "developer", devPermissions]
       );
 
       // If user chose to include demo data
@@ -1791,7 +2002,7 @@ async function startServer() {
       const timeNow = new Date().toISOString();
       await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, ?, ?)", [
         timeNow,
-        "innocode", "إعادة ضبط المصنع وتصفية النظام",
+        "Elkapten", "إعادة ضبط المصنع وتصفية النظام",
         keepDemoData ? "تم تفريغ كافة البيانات والعمليات مع إبقاء وتغذية البيانات الضخمة" : "تم تفريغ النظام كاملاً وتفريغ الجداول بالكامل"
       ]);
 
@@ -1856,7 +2067,7 @@ async function startServer() {
       }
       res.json({
         exportedAt: new Date().toISOString(),
-        system: "InnoCode POS System",
+        system: "Elkapten POS System",
         data: backupData
       });
     } catch (err: any) {
@@ -1911,7 +2122,7 @@ async function startServer() {
       }
       const fullBackup = {
         exportedAt: new Date().toISOString(),
-        system: "InnoCode POS System - SQLite Database Backup",
+        system: "Elkapten POS System - SQLite Database Backup",
         data: backupData
       };
       const todayStr = new Date().toISOString().split("T")[0];
@@ -1931,28 +2142,49 @@ async function startServer() {
         return res.status(400).json({ error: "بيانات النسخة الاحتياطية غير صالحة." });
       }
 
+      // قائمة بيضاء: نسمح فقط بجداول وأعمدة موجودة فعلًا في القاعدة
+      // (يمنع حقن SQL عبر أسماء جداول/أعمدة مفبركة في ملف الاستعادة)
+      const schema = new Map<string, Set<string>>();
+      const master: any[] = await dbAll("SELECT name FROM sqlite_master WHERE type = 'table'");
+      for (const t of master) {
+        const tName = String(t.name);
+        const info: any[] = await dbAll(`PRAGMA table_info("${tName.replace(/"/g, '""')}")`);
+        schema.set(tName, new Set(info.map((c) => String(c.name))));
+      }
+
+      const skipped: string[] = [];
       for (const table of Object.keys(data)) {
+        const allowedCols = schema.get(table);
         const rows = data[table];
-        if (Array.isArray(rows)) {
-          await dbRun(`DELETE FROM ${table}`);
-          for (const row of rows) {
-            const keys = Object.keys(row);
-            if (keys.length === 0) continue;
-            const cols = keys.join(", ");
-            const placeholders = keys.map(() => "?").join(", ");
-            const values = keys.map(k => row[k]);
-            await dbRun(`INSERT INTO ${table} (${cols}) VALUES (${placeholders})`, values);
-          }
+        if (!allowedCols || table.startsWith("sqlite_") || !Array.isArray(rows)) {
+          skipped.push(table);
+          continue;
+        }
+        const quotedTable = `"${table.replace(/"/g, '""')}"`;
+        await dbRun(`DELETE FROM ${quotedTable}`);
+        for (const row of rows) {
+          const keys = Object.keys(row).filter((k) => allowedCols.has(k));
+          if (keys.length === 0) continue;
+          const quotedCols = keys.map((k) => `"${k.replace(/"/g, '""')}"`).join(", ");
+          const placeholders = keys.map(() => "?").join(", ");
+          const values = keys.map((k) => row[k]);
+          await dbRun(`INSERT INTO ${quotedTable} (${quotedCols}) VALUES (${placeholders})`, values);
         }
       }
 
       await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, 'استعادة النسخة الاحتياطية', ?)", [
         new Date().toISOString(),
         "المبرمج",
-        `تمت استعادة ${Object.keys(data).length} جدول`
+        `تمت استعادة ${Object.keys(data).length - skipped.length} جدول` +
+          (skipped.length ? ` — تم تجاهل ${skipped.length} غير موجود: ${skipped.join("، ")}` : "")
       ]);
 
-      res.json({ success: true, message: "تمت استعادة كافة الجداول والبيانات بنجاح." });
+      res.json({
+        success: true,
+        message: "تمت استعادة كافة الجداول والبيانات بنجاح." +
+          (skipped.length ? ` (تجاهل ${skipped.length} جدول غير موجود في القاعدة)` : ""),
+        skipped,
+      });
     } catch (err: any) {
       res.status(500).json({ error: `فشلت الاستعادة: ${err.message}` });
     }
@@ -2191,10 +2423,157 @@ async function startServer() {
     }
   });
 
+  // Helpers — Tamween monthly summary with carry-over (الترحيل)
+  function prevMonthStr(ym: string): string {
+    const [y, m] = ym.split("-").map(Number);
+    const d = new Date(y, (m || 1) - 2, 1);
+    const py = d.getFullYear();
+    const pm = String(d.getMonth() + 1).padStart(2, "0");
+    return `${py}-${pm}`;
+  }
+
+  // سعر الاستعاضة لكل باركود (أحدث استعاضة تغلب) — أساس حساب مبيعات التموين المخصومة
+  async function loadTamweenPriceMap(): Promise<Record<string, number>> {
+    const map: Record<string, number> = {};
+    try {
+      const reps: any[] = await dbAll("SELECT items_json FROM tamween_replacements ORDER BY date ASC, id ASC");
+      for (const rep of reps) {
+        let its: any[] = [];
+        try { its = JSON.parse(rep.items_json || "[]"); } catch { its = []; }
+        for (const it of its) {
+          const bc = String(it.barcode || "");
+          const p = Number(it.purchase_price);
+          if (bc && p > 0) map[bc] = p;
+        }
+      }
+    } catch { /* لو الاستعاضات فاضية نرجع خريطة فاضية */ }
+    return map;
+  }
+
+  // مبيعات الأصناف التموينية (is_tamween = 1) من الكاشير — بكارت تموين أو بدونه — بسعر الاستعاضة
+  async function getTamweenSoldValue(
+    dateWhere: string,
+    dateParams: any[],
+    priceMap: Record<string, number>
+  ): Promise<number> {
+    const rows: any[] = await dbAll(
+      `SELECT ii.barcode as barcode, COALESCE(SUM(ii.quantity), 0) as qty,
+              COALESCE(MAX(it.purchase_price), 0) as item_price,
+              COALESCE(MAX(ii.cost_price), 0) as inv_cost
+       FROM invoice_items ii
+       JOIN invoices i ON ii.invoice_id = i.id
+       JOIN items it ON it.barcode = ii.barcode AND it.is_tamween = 1
+       WHERE ii.barcode IS NOT NULL AND ii.barcode != ''
+         AND i.type = 'sales' AND (i.status != 'returned' OR i.status IS NULL)
+         AND ${dateWhere}
+       GROUP BY ii.barcode`,
+      dateParams
+    );
+    let total = 0;
+    for (const r of rows) {
+      const price = priceMap[r.barcode] || Number(r.item_price) || Number(r.inv_cost) || 0;
+      total += (Number(r.qty) || 0) * price;
+    }
+    return total;
+  }
+
+  async function getTamweenMonthSummary(targetMonth: string, depth = 0, priceMap?: Record<string, number>): Promise<any> {
+    const safeMonth = /^\d{4}-\d{2}$/.test(targetMonth || "")
+      ? targetMonth
+      : new Date().toISOString().slice(0, 7);
+    if (!priceMap) priceMap = await loadTamweenPriceMap();
+    // خصم مبيعات الأصناف التموينية المباعة من الكاشير (أي دفع) — بسعر الاستعاضة
+    const tamweenSold = await getTamweenSoldValue("substr(i.date, 1, 7) = ?", [safeMonth], priceMap);
+    // إجمالي الاستعاضات من جدول الاستعاضات لنفس الشهر
+    const repRow: any = await dbGet(
+      "SELECT COALESCE(SUM(total_value), 0) as total FROM tamween_replacements WHERE substr(date, 1, 7) = ?",
+      [safeMonth]
+    );
+    const replacements = Number(repRow?.total || 0);
+    // الدعم المنصرف: قيمة الكارت المباع من الكاشير فعليًا (invoices.tamween_discount) — مش قيمة الكارت الكاملة للعميل
+    const disRow: any = await dbGet(
+      "SELECT COALESCE(SUM(tamween_discount), 0) as disbursed, COUNT(*) as cards FROM invoices WHERE type = 'sales' AND tamween_discount > 0 AND (status != 'returned' OR status IS NULL) AND substr(date, 1, 7) = ?",
+      [safeMonth]
+    );
+    const disbursed = Number(disRow?.disbursed || 0);
+    const cardsUsed = Number(disRow?.cards || 0);
+    // نقاط الخبز المنصرفة: المصدر الحقيقي هو الفواتير نفسها (invoices.bread_points)
+    // — مش tamween_customers.status_month اللي بيضيع تاريخيًا مع أي تعديل على حالة العميل
+    const breadRow: any = await dbGet(
+      "SELECT COALESCE(SUM(bread_points), 0) as bread FROM invoices WHERE type = 'sales' AND bread_points > 0 AND (status != 'returned' OR status IS NULL) AND substr(date, 1, 7) = ?",
+      [safeMonth]
+    );
+    const breadPoints = Number(breadRow?.bread || 0);
+    // مبيعات وربح فواتير الكارت — أي صنف طالما الفاتورة فيها كارت (القاعدة: ب)
+    const tRow: any = await dbGet(
+      `SELECT COALESCE(SUM(ii.total), 0) as sales,
+              COALESCE(SUM((ii.price - ii.cost_price) * ii.quantity), 0) as profit,
+              COALESCE(SUM(CASE WHEN (ii.price - ii.cost_price) * ii.quantity > 0 THEN (ii.price - ii.cost_price) * ii.quantity ELSE 0 END), 0) as gains,
+              COALESCE(SUM(CASE WHEN (ii.price - ii.cost_price) * ii.quantity < 0 THEN (ii.price - ii.cost_price) * ii.quantity ELSE 0 END), 0) as losses
+       FROM invoice_items ii
+       JOIN invoices i ON ii.invoice_id = i.id
+       WHERE i.type = 'sales' AND (i.status != 'returned' OR i.status IS NULL)
+         AND i.tamween_discount > 0
+         AND substr(i.date, 1, 7) = ?`,
+      [safeMonth]
+    );
+    const sales = Number(tRow?.sales || 0);
+    const profit = Number(tRow?.profit || 0);
+    const gains = Number(tRow?.gains || 0);
+    const losses = Number(tRow?.losses || 0);
+    // الرصيد الافتتاحي: يدوي لو متسجل، وإلا المتبقي của الشهر السابق (ترحيل تلقائي)
+    let opening = 0;
+    try {
+      const openRow: any = await dbGet("SELECT opening_balance FROM tamween_month_openings WHERE month = ?", [safeMonth]);
+      if (openRow && openRow.opening_balance !== null && openRow.opening_balance !== undefined) {
+        opening = Number(openRow.opening_balance || 0);
+      } else if (depth < 60) {
+        const prev = prevMonthStr(safeMonth);
+        const prevSummary = await getTamweenMonthSummary(prev, depth + 1, priceMap);
+        opening = Number(prevSummary?.remaining || 0);
+      }
+    } catch {
+      opening = 0;
+    }
+    const available = opening + replacements;
+    const remaining = available - disbursed - tamweenSold;
+    return { month: safeMonth, opening, replacements, disbursed, cardsUsed, breadPoints, available, tamweenSold, sales, profit, gains, losses, remaining };
+  }
+
   // API - Dashboard Stats
+  // جريد «الأكثر مبيعًا» لشاشة الكاشير — خفيف وبمحدودية 12 صنف
+  app.get("/api/quick-products", async (req, res) => {
+    try {
+      const rows = await dbAll(`
+        SELECT it.barcode,
+               it.name,
+               it.unit,
+               SUM(ii.quantity) as total_qty,
+               it.purchase_price,
+               it.retail_price,
+               it.wholesale_price,
+               it.quantity as quantity,
+               it.is_unlimited,
+               it.low_stock_limit
+        FROM invoice_items ii
+        JOIN invoices i ON ii.invoice_id = i.id
+        JOIN items it ON it.barcode = ii.barcode
+        WHERE i.type = 'sales' AND (i.status != 'returned' OR i.status IS NULL)
+        GROUP BY it.barcode
+        ORDER BY total_qty DESC
+        LIMIT 12
+      `);
+      res.json(rows);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || "تعذر جلب الأصناف السريعة." });
+    }
+  });
+
   app.get("/api/dashboard/stats", async (req, res) => {
     try {
       const dateToday = new Date().toISOString().split("T")[0];
+      const reqMonth = typeof (req.query as any)?.month === "string" ? (req.query as any).month : "";
+      const currentMonth = /^\d{4}-\d{2}$/.test(reqMonth) ? reqMonth : new Date().toISOString().slice(0, 7);
 
       // Total Sales Summary
       const salesSum = await dbGet("SELECT SUM(total) as total, COUNT(*) as count FROM invoices WHERE type = 'sales' AND (status != 'returned' OR status IS NULL)");
@@ -2243,11 +2622,8 @@ async function startServer() {
       const todayReturns = await dbGet("SELECT COUNT(*) as count FROM invoices WHERE status = 'returned' AND date = ?", [dateToday]);
       const todayReturnsCount = todayReturns.count || 0;
 
-      // Tamween Stats
-      const currentMonth = new Date().toISOString().slice(0, 7);
-      const tamweenDiscount = await dbGet("SELECT COALESCE(SUM(tamween_discount), 0) as total FROM invoices WHERE type = 'sales' AND tamween_discount > 0 AND date LIKE ?", [`${currentMonth}%`]);
-      const tamweenCardsUsed = await dbGet("SELECT COUNT(*) as count FROM tamween_customers WHERE status = 'withdrawn' AND status_month = ?", [currentMonth]);
-      const tamweenReplacements = await dbGet("SELECT COALESCE(SUM(total_value), 0) as total FROM tamween_replacements WHERE date LIKE ?", [`${currentMonth}%`]);
+      // Tamween Stats — بالترحيل (رصيد أول المدة + استعاضات - منصرف)
+      const tamweenSummary = await getTamweenMonthSummary(currentMonth);
 
       // Graph Data: Past 7 days sales & purchases
       const graphData: any[] = [];
@@ -2290,12 +2666,280 @@ async function startServer() {
         todaySalesCount,
         todayReturnsCount,
         tamween: {
-          discount: tamweenDiscount.total || 0,
-          cardsUsed: tamweenCardsUsed.count || 0,
-          replacements: tamweenReplacements.total || 0,
-          netOwed: (tamweenDiscount.total || 0) - (tamweenReplacements.total || 0)
+          month: tamweenSummary.month,
+          opening: tamweenSummary.opening,
+          discount: tamweenSummary.disbursed,
+          cardsUsed: tamweenSummary.cardsUsed,
+          replacements: tamweenSummary.replacements,
+          breadPoints: tamweenSummary.breadPoints,
+          available: tamweenSummary.available,
+          remaining: tamweenSummary.remaining,
+          netOwed: tamweenSummary.remaining
         }
       });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // API - Tamween month summary (for dashboard card with month picker)
+  app.get("/api/tamween/month-summary", async (req, res) => {
+    try {
+      const m = typeof (req.query as any)?.month === "string" ? (req.query as any).month : "";
+      const summary = await getTamweenMonthSummary(m);
+      res.json(summary);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // API - Tamween financial report (بند مستقل: الفواتير اللي فيها كارت تموين فقط — بدون كارت = حر)
+  app.get("/api/reports/tamween", async (req, res) => {
+    try {
+      const { startDate, endDate } = req.query as any;
+      if (!startDate || !endDate) return res.status(400).json({ error: "حدد الفترة (من/إلى)" });
+      const startMonth = String(startDate).slice(0, 7);
+      const endMonth = String(endDate).slice(0, 7);
+
+      // مبيعات وربح كل الأصناف في فواتير الكارت (tamween_discount > 0) — أي صنف طالما الفاتورة فيها كارت
+      const tSales: any = await dbGet(
+        `SELECT COALESCE(SUM(ii.total), 0) as sales, COALESCE(SUM((ii.price - ii.cost_price) * ii.quantity), 0) as profit,
+                COALESCE(SUM(CASE WHEN (ii.price - ii.cost_price) * ii.quantity > 0 THEN (ii.price - ii.cost_price) * ii.quantity ELSE 0 END), 0) as gains,
+                COALESCE(SUM(CASE WHEN (ii.price - ii.cost_price) * ii.quantity < 0 THEN (ii.price - ii.cost_price) * ii.quantity ELSE 0 END), 0) as losses
+         FROM invoice_items ii
+         JOIN invoices i ON ii.invoice_id = i.id
+         WHERE i.type = 'sales' AND (i.status != 'returned' OR i.status IS NULL)
+         AND i.tamween_discount > 0
+         AND i.date >= ? AND i.date <= ?`,
+        [startDate, endDate]
+      );
+      // مشتريات الأصناف التموينية فقط (تكلفة التوريد) — بتفضل تموين مهما اتباع بعدين
+      const tPurch: any = await dbGet(
+        `SELECT COALESCE(SUM(ii.total), 0) as purchases
+         FROM invoice_items ii
+         JOIN invoices i ON ii.invoice_id = i.id
+         JOIN items it ON it.barcode = ii.barcode AND it.is_tamween = 1
+         WHERE i.type = 'purchases' AND i.date >= ? AND i.date <= ?`,
+        [startDate, endDate]
+      );
+      // استعاضات الفترة من جدول الاستعاضات
+      const tRep: any = await dbGet(
+        "SELECT COALESCE(SUM(total_value), 0) as total, COUNT(*) as count FROM tamween_replacements WHERE date >= ? AND date <= ?",
+        [startDate, endDate]
+      );
+      // الدعم المنصرف: قيمة الكارت المباع من الكاشير فعليًا (قيمة الكارت فقط)
+      const tCards: any = await dbGet(
+        `SELECT COUNT(*) as count, COALESCE(SUM(tamween_discount), 0) as disbursed
+         FROM invoices WHERE type = 'sales' AND tamween_discount > 0
+         AND (status != 'returned' OR status IS NULL)
+         AND date >= ? AND date <= ?`,
+        [startDate, endDate]
+      );
+      // نقاط الخبز المنصرفة (مستقلة عن قيمة الكارت) — مصدرها الفواتير مباشرة
+      const tBread: any = await dbGet(
+        `SELECT COALESCE(SUM(bread_points), 0) as bread
+         FROM invoices WHERE type = 'sales' AND bread_points > 0
+         AND (status != 'returned' OR status IS NULL)
+         AND date >= ? AND date <= ?`,
+        [startDate, endDate]
+      );
+      // الرصيد الافتتاحي لأول شهر في الفترة (ترحيل تلقائي/يدوي)
+      let opening = 0;
+      try {
+        const s = await getTamweenMonthSummary(startMonth);
+        opening = Number(s?.opening || 0);
+      } catch { opening = 0; }
+      const replacements = Number(tRep?.total || 0);
+      const disbursed = Number(tCards?.disbursed || 0);
+      // خصم مبيعات الأصناف التموينية (أي دفع) بسعر الاستعاضة — نفس قاعدة المربع الرئيسي
+      const tamweenSold = await getTamweenSoldValue("i.date >= ? AND i.date <= ?", [startDate, endDate], await loadTamweenPriceMap());
+      const remaining = opening + replacements - disbursed - tamweenSold;
+
+      res.json({
+        startDate, endDate,
+        sales: Number(tSales?.sales || 0),
+        profit: Number(tSales?.profit || 0),
+        gains: Number(tSales?.gains || 0),
+        losses: Number(tSales?.losses || 0),
+        purchases: Number(tPurch?.purchases || 0),
+        replacements,
+        replacementsCount: Number(tRep?.count || 0),
+        disbursed,
+        cardsUsed: Number(tCards?.count || 0),
+        breadPoints: Number(tBread?.bread || 0),
+        opening,
+        available: opening + replacements,
+        tamweenSold,
+        remaining,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+  // API - Tamween report details (تفاصيل كل بند للجداول المنسقة)
+  app.get("/api/reports/tamween/details", async (req, res) => {
+    try {
+      const { startDate, endDate } = req.query as any;
+      if (!startDate || !endDate) return res.status(400).json({ error: "حدد الفترة (من/إلى)" });
+      const startMonth = String(startDate).slice(0, 7);
+      const endMonth = String(endDate).slice(0, 7);
+      // مبيعات وربح كل الأصناف في فواتير الكارت — أي صنف طالما الفاتورة فيها كارت (مودال صافي ربح التموين)
+      const salesItems = await dbAll(
+        `SELECT ii.barcode, ii.name, ii.unit, SUM(ii.quantity) as qty,
+                CASE WHEN SUM(ii.quantity) > 0 THEN SUM(ii.total) / SUM(ii.quantity) ELSE 0 END as price,
+                SUM(ii.total) as total,
+                SUM((ii.price - ii.cost_price) * ii.quantity) as profit
+         FROM invoice_items ii
+         JOIN invoices i ON ii.invoice_id = i.id
+         WHERE i.type = 'sales' AND (i.status != 'returned' OR i.status IS NULL)
+         AND i.tamween_discount > 0
+         AND i.date >= ? AND i.date <= ?
+         GROUP BY ii.barcode, ii.name, ii.unit ORDER BY total DESC`,
+        [startDate, endDate]
+      );
+      // بضاعة حر مباعة داخل نفس فواتير التموين (الأصناف غير التموينية في فواتير الكارت)
+      const freeSalesItems = await dbAll(
+        `SELECT ii.barcode, ii.name, ii.unit, SUM(ii.quantity) as qty,
+                CASE WHEN SUM(ii.quantity) > 0 THEN SUM(ii.total) / SUM(ii.quantity) ELSE 0 END as price,
+                SUM(ii.total) as total,
+                SUM((ii.price - ii.cost_price) * ii.quantity) as profit
+         FROM invoice_items ii
+         JOIN invoices i ON ii.invoice_id = i.id
+         LEFT JOIN items it ON it.barcode = ii.barcode
+         WHERE i.type = 'sales' AND (i.status != 'returned' OR i.status IS NULL)
+         AND i.tamween_discount > 0
+         AND i.date >= ? AND i.date <= ?
+         AND COALESCE(it.is_tamween, 0) != 1
+         GROUP BY ii.barcode, ii.name, ii.unit ORDER BY total DESC`,
+        [startDate, endDate]
+      );
+      // بضاعة تموينية (عليها بند تمويني) مباعة بأي طريقة دفع — الكارت مش شرط
+      const tamweenAllItems = await dbAll(
+        `SELECT ii.barcode, ii.name, ii.unit, SUM(ii.quantity) as qty,
+                CASE WHEN SUM(ii.quantity) > 0 THEN SUM(ii.total) / SUM(ii.quantity) ELSE 0 END as price,
+                SUM(ii.total) as total,
+                SUM((ii.price - ii.cost_price) * ii.quantity) as profit
+         FROM invoice_items ii
+         JOIN invoices i ON ii.invoice_id = i.id
+         JOIN items it ON it.barcode = ii.barcode AND it.is_tamween = 1
+         WHERE i.type = 'sales' AND (i.status != 'returned' OR i.status IS NULL)
+         AND i.date >= ? AND i.date <= ?
+         GROUP BY ii.barcode, ii.name, ii.unit ORDER BY total DESC`,
+        [startDate, endDate]
+      );
+      const purchaseItems = await dbAll(
+        `SELECT ii.barcode, ii.name, ii.unit, SUM(ii.quantity) as qty,
+                CASE WHEN SUM(ii.quantity) > 0 THEN SUM(ii.total) / SUM(ii.quantity) ELSE 0 END as price,
+                SUM(ii.total) as total
+         FROM invoice_items ii
+         JOIN invoices i ON ii.invoice_id = i.id
+         JOIN items it ON it.barcode = ii.barcode AND it.is_tamween = 1
+         WHERE i.type = 'purchases' AND i.date >= ? AND i.date <= ?
+         GROUP BY ii.barcode, ii.name, ii.unit ORDER BY total DESC`,
+        [startDate, endDate]
+      );
+      const customers = await dbAll(
+        `SELECT id, name, secret_number, phone, card_value, bread_points, status, status_month
+         FROM tamween_customers WHERE status = 'withdrawn' AND status_month >= ? AND status_month <= ?
+         ORDER BY name`,
+        [startMonth, endMonth]
+      );
+      res.json({ salesItems, freeSalesItems, tamweenAllItems, purchaseItems, customers });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+  // API - Set manual opening balance for a month (رصيد أول المدة)
+  app.put("/api/tamween/month-opening", async (req, res) => {
+    try {
+      const { month, opening_balance } = req.body as any;
+      if (!/^\d{4}-\d{2}$/.test(month || "")) return res.status(400).json({ error: "الشهر غير صحيح (YYYY-MM)" });
+      const val = Number(opening_balance);
+      if (isNaN(val)) return res.status(400).json({ error: "الرصيد غير صحيح" });
+      await dbRun(
+        "INSERT INTO tamween_month_openings (month, opening_balance, updated_at) VALUES (?, ?, ?) ON CONFLICT(month) DO UPDATE SET opening_balance = excluded.opening_balance, updated_at = excluded.updated_at",
+        [month, val, new Date().toISOString()]
+      );
+      const summary = await getTamweenMonthSummary(month);
+      res.json({ success: true, summary });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // API - مطابقة سمارت (مبيعات سمارت + دعم سمارت + الفرق) — اليدوي والمقترح تلقائيًا
+  app.get("/api/machine-sales", async (req, res) => {
+    try {
+      const month = String(req.query.month || new Date().toISOString().slice(0, 7));
+      if (!/^\d{4}-\d{2}$/.test(month)) return res.status(400).json({ error: "الشهر غير صحيح (YYYY-MM)" });
+      const rows: any[] = await dbAll(
+        "SELECT day, smart_sales, smart_support, smart_diff, note FROM machine_daily_sales WHERE substr(day, 1, 7) = ? ORDER BY day",
+        [month]
+      );
+      const list = rows.map((r) => {
+        const smartSales = Number(r.smart_sales || 0);
+        const smartSupport = Number(r.smart_support || 0);
+        const autoDiff = smartSupport - smartSales;
+        const hasManualDiff = r.smart_diff !== null && r.smart_diff !== undefined;
+        return {
+          day: r.day,
+          smartSales,
+          smartSupport,
+          autoDiff,
+          diff: hasManualDiff ? Number(r.smart_diff) : autoDiff,
+          hasManualDiff,
+          note: r.note || "",
+          hasEntry: true,
+        };
+      });
+      const totals = list.reduce(
+        (s, d) => ({
+          smartSales: s.smartSales + d.smartSales,
+          smartSupport: s.smartSupport + d.smartSupport,
+          autoDiff: s.autoDiff + d.autoDiff,
+          diff: s.diff + d.diff,
+          manualDiffDays: s.manualDiffDays + (d.hasManualDiff ? 1 : 0),
+        }),
+        { smartSales: 0, smartSupport: 0, autoDiff: 0, diff: 0, manualDiffDays: 0 }
+      );
+      res.json({ month, list, totals, entries: rows.length });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // API - حفظ / تعديل مبيعات سمارت ليوم واحد
+  app.put("/api/machine-sales", async (req, res) => {
+    try {
+      const { day, sales, support, diff, note } = req.body as any;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day || "")) return res.status(400).json({ error: "التاريخ غير صحيح (YYYY-MM-DD)" });
+      const s = Number(sales);
+      const sp = Number(support);
+      if (isNaN(s) || s < 0) return res.status(400).json({ error: "قيمة مبيعات سمارت غير صحيحة" });
+      if (isNaN(sp) || sp < 0) return res.status(400).json({ error: "قيمة دعم سمارت غير صحيحة" });
+      let manualDiff: number | null = null;
+      if (diff !== "" && diff !== null && diff !== undefined) {
+        manualDiff = Number(diff);
+        if (isNaN(manualDiff)) return res.status(400).json({ error: "قيمة الفرق غير صحيحة" });
+      }
+      await dbRun(
+        "INSERT INTO machine_daily_sales (day, total, smart_sales, smart_support, smart_diff, note, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) " +
+        "ON CONFLICT(day) DO UPDATE SET total = excluded.total, smart_sales = excluded.smart_sales, smart_support = excluded.smart_support, smart_diff = excluded.smart_diff, note = excluded.note, updated_at = excluded.updated_at",
+        [day, s, s, sp, manualDiff, String(note || ""), new Date().toISOString()]
+      );
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // API - حذف إدخال يوم من الماكينة
+  app.delete("/api/machine-sales/:day", async (req, res) => {
+    try {
+      const { day } = req.params;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day || "")) return res.status(400).json({ error: "التاريخ غير صحيح" });
+      await dbRun("DELETE FROM machine_daily_sales WHERE day = ?", [day]);
+      res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -2313,15 +2957,18 @@ async function startServer() {
 
   app.post("/api/partners", async (req, res) => {
     try {
-      const { name, fixed_profit_percentage, purchase_percentage, logCreator } = req.body;
+      const { name, fixed_profit_percentage, purchase_percentage, fixed_profit_amount, logCreator } = req.body;
+      const amount = Number(fixed_profit_amount) || 0;
       const result = await dbRun(
-        "INSERT INTO partners (name, fixed_profit_percentage, purchase_percentage) VALUES (?, ?, ?)",
-        [name, Number(fixed_profit_percentage), Number(purchase_percentage)]
+        "INSERT INTO partners (name, fixed_profit_percentage, purchase_percentage, fixed_profit_amount) VALUES (?, ?, ?, ?)",
+        [name, Number(fixed_profit_percentage), Number(purchase_percentage), amount]
       );
       await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, 'إضافة شريك', ?)", [
         new Date().toISOString(),
         logCreator || "المدير العام",
-        `تم إضافة شريك جديد باسم: ${name} وبنسبة ربح ثابتة ${fixed_profit_percentage}% وقيمة فواتير مشتريات ${purchase_percentage}%`
+        amount > 0
+          ? `تم إضافة شريك جديد باسم: ${name} وحصة ربح ثابتة ${amount} ج.م وتشارك المشتريات ${purchase_percentage}%`
+          : `تم إضافة شريك جديد باسم: ${name} وبنسبة ربح ثابتة ${fixed_profit_percentage}% وقيمة فواتير مشتريات ${purchase_percentage}%`
       ]);
       res.json({ success: true, id: result.id });
     } catch (err: any) {
@@ -2332,17 +2979,21 @@ async function startServer() {
   app.put("/api/partners/:id", async (req, res) => {
     try {
       const { id } = req.params;
-      const { name, fixed_profit_percentage, purchase_percentage, logCreator } = req.body;
+      const { name, fixed_profit_percentage, purchase_percentage, fixed_profit_amount, logCreator } = req.body;
       const original = await dbGet("SELECT * FROM partners WHERE id = ?", [id]);
+      // لو المبلغ مش مبعوت (نماذج قديمة) نحافظ على القيمة القديمة بدل ما نصفّرها
+      const amount = fixed_profit_amount !== undefined ? Number(fixed_profit_amount) || 0 : (original?.fixed_profit_amount || 0);
       await dbRun(
-        "UPDATE partners SET name = ?, fixed_profit_percentage = ?, purchase_percentage = ? WHERE id = ?",
-        [name, Number(fixed_profit_percentage), Number(purchase_percentage), id]
+        "UPDATE partners SET name = ?, fixed_profit_percentage = ?, purchase_percentage = ?, fixed_profit_amount = ? WHERE id = ?",
+        [name, Number(fixed_profit_percentage), Number(purchase_percentage), amount, id]
       );
       if (original) {
         await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, 'تعديل شريك', ?)", [
           new Date().toISOString(),
           logCreator || "المدير العام",
-          `تم تعديل الشريك "${name}": الربح من ${original.fixed_profit_percentage}% -> ${fixed_profit_percentage}%، تشارك المشتريات من ${original.purchase_percentage}% -> ${purchase_percentage}%`
+          amount > 0
+            ? `تم تعديل الشريك "${name}": حصة الربح ${original.fixed_profit_amount || 0} ج.م -> ${amount} ج.م، تشارك المشتريات من ${original.purchase_percentage}% -> ${purchase_percentage}%`
+            : `تم تعديل الشريك "${name}": الربح من ${original.fixed_profit_percentage}% -> ${fixed_profit_percentage}%، تشارك المشتريات من ${original.purchase_percentage}% -> ${purchase_percentage}%`
         ]);
       }
       res.json({ success: true });
@@ -2491,11 +3142,12 @@ async function startServer() {
 
       const rInvoices = await dbAll(invoicesQuery, params);
 
-      // Fetch all items within dates
+      // Fetch all items within dates (مع is_tamween + tamween_discount لفصل حر/تموين على مستوى الصنف)
       const rItems = await dbAll(`
-        SELECT ii.*, i.type, i.date
+        SELECT ii.*, i.type, i.date, i.status, i.tamween_discount, it.is_tamween
         FROM invoice_items ii
         JOIN invoices i ON ii.invoice_id = i.id
+        LEFT JOIN items it ON it.barcode = ii.barcode
         WHERE i.date >= ? AND i.date <= ?
       `, [startDate as string, endDate as string]);
 
@@ -2704,7 +3356,7 @@ async function startServer() {
       await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, 'استعادة شاملة', ?)", [
         new Date().toISOString(), "المدير", `تمت استعادة نسخة شاملة (نسخة الأمان: ${safety.filename})`
       ]).catch(() => {});
-      res.json({ success: true, message: "تمت الاستعادة بنجاح. سيعاد تشغيل السيرفر الآن - أعد فتحه من start-3001.bat", safety: safety.filename });
+      res.json({ success: true, message: "تمت الاستعادة بنجاح. سيعاد تشغيل السيرفر الآن - أعد فتحه من شغل البرنامج.bat", safety: safety.filename });
       setTimeout(() => process.exit(0), 1500);
     } catch (err: any) {
       try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
@@ -2855,8 +3507,17 @@ async function startServer() {
   });
 
   // ==================== TAMWEEN CUSTOMERS API ====================
+  // Rollover شهري تلقائي: أي حالة من شهر قديم تتصفر (الشهر الجديد يبدأ نظيفاً)
+  async function rolloverTamweenMonth() {
+    try {
+      const cm = new Date().toISOString().slice(0, 7);
+      await dbRun("UPDATE tamween_customers SET status = '', status_month = '', pending_sale_json = '' WHERE status_month != '' AND status_month < ?", [cm]);
+    } catch {}
+  }
+
   app.get("/api/tamween-customers", async (req, res) => {
     try {
+      await rolloverTamweenMonth();
       const customers = await dbAll("SELECT * FROM tamween_customers ORDER BY id DESC");
       res.json(customers);
     } catch (err: any) {
@@ -2866,8 +3527,9 @@ async function startServer() {
 
   app.get("/api/tamween-customers/stats", async (req, res) => {
     try {
+      await rolloverTamweenMonth();
       const currentMonth = new Date().toISOString().slice(0, 7);
-      const total = (await dbGet("SELECT COUNT(*) as c FROM tamween_customers WHERE status = 'withdrawn' AND status_month = ?", [currentMonth])).c;
+      const total = (await dbGet("SELECT COUNT(*) as c FROM tamween_customers")).c;
       const withdrawn = (await dbGet("SELECT COUNT(*) as c FROM tamween_customers WHERE status = 'withdrawn' AND status_month = ?", [currentMonth])).c;
       const later = (await dbGet("SELECT COUNT(*) as c FROM tamween_customers WHERE status = 'later' AND status_month = ?", [currentMonth])).c;
       res.json({ total, withdrawn, later });
@@ -2876,7 +3538,91 @@ async function startServer() {
     }
   });
 
-  // API - Tamween Monthly Reconciliation Report
+  // Migration: track auto-generated purchase + stock sync per replacement (منع الازدواج)
+  try {
+    const repCols = await dbAll("PRAGMA table_info(tamween_replacements)");
+    const repColNames = repCols.map((c: any) => c.name);
+    if (!repColNames.includes("purchase_invoice_number")) {
+      await dbRun("ALTER TABLE tamween_replacements ADD COLUMN purchase_invoice_number TEXT DEFAULT ''");
+      console.log("[Migration] Added 'purchase_invoice_number' column to tamween_replacements");
+    }
+    if (!repColNames.includes("stock_added")) {
+      await dbRun("ALTER TABLE tamween_replacements ADD COLUMN stock_added INTEGER DEFAULT 0");
+      console.log("[Migration] Added 'stock_added' column to tamween_replacements");
+    }
+  } catch (e: any) {
+    console.log("[Migration] tamween_replacements stock columns skipped:", e.message);
+  }
+
+  // Helpers — مزامنة المخزون/المشتريات مع الاستعاضة (إضافة مرة واحدة + عكس آمن)
+  async function applyReplacementStock(repId: number, supplier_name: string, date: string, items: any[], total_value: number) {
+    const warnings: string[] = [];
+    let genInvoiceNumber = "";
+    const supRecord = await dbGet("SELECT id FROM suppliers WHERE name = ? AND is_tamween_supplier = 1", [supplier_name]);
+    if (!supRecord) {
+      warnings.push("المورد غير معلم كمورد تموين — لم يتم إنشاء فاتورة شراء ولا تحريك المخزن");
+      await dbRun("UPDATE tamween_replacements SET stock_added = 0, purchase_invoice_number = '' WHERE id = ?", [repId]);
+      return { generated: false, genInvoiceNumber, warnings };
+    }
+    genInvoiceNumber = `RE-${String(date || "").replace(/-/g, "")}-${repId}`;
+    const created_at = new Date().toISOString();
+    await dbRun(
+      `INSERT INTO invoices (invoice_number, type, date, customer_supplier_name, payment_source, sale_type, subtotal, tax, discount, total, paid, remaining, created_by, created_at)
+       VALUES (?, 'purchases', ?, ?, 'main_safe', NULL, ?, 0, 0, ?, 0, 0, 'النظام', ?)`,
+      [genInvoiceNumber, date, supplier_name, total_value || 0, total_value || 0, created_at]
+    );
+    const invIdRow2 = await dbGet("SELECT last_insert_rowid() as id");
+    const invoiceId = invIdRow2.id;
+    for (const item of (items || [])) {
+      if (!(item.name || "").trim() || !(Number(item.quantity) > 0)) continue;
+      await dbRun(
+        `INSERT INTO invoice_items (invoice_id, barcode, name, quantity, unit, price, cost_price, total) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [invoiceId, item.barcode, item.name, item.quantity, item.unit || "قطعة", item.purchase_price, item.purchase_price, (item.quantity || 0) * (item.purchase_price || 0)]
+      );
+      const existing = await dbGet("SELECT id, quantity, is_unlimited FROM items WHERE barcode = ? AND barcode != ''", [item.barcode]);
+      const retail = Number(item.retail_price) > 0 ? Number(item.retail_price) : (item.purchase_price || 0) * 1.2;
+      const wholesale = Number(item.wholesale_price) > 0 ? Number(item.wholesale_price) : (item.purchase_price || 0);
+      if (existing) {
+        const newQty = existing.is_unlimited === 1 ? existing.quantity : (existing.quantity + Number(item.quantity));
+        await dbRun("UPDATE items SET quantity = ?, is_tamween = 1, purchase_price = ?, retail_price = ?, wholesale_price = ?, supplier_id = COALESCE(?, supplier_id), supplier_name = COALESCE(?, supplier_name) WHERE barcode = ?",
+          [newQty, item.purchase_price || 0, retail, wholesale, supRecord.id, supplier_name, item.barcode]);
+      } else {
+        await dbRun(`INSERT INTO items (barcode, name, purchase_price, retail_price, wholesale_price, quantity, unit, low_stock_limit, category, is_tamween, is_unlimited, supplier_id, supplier_name)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 10, 'تموين', 1, 0, ?, ?)`,
+          [item.barcode || "", item.name, item.purchase_price, retail, wholesale, item.quantity || 0, item.unit || "قطعة", supRecord.id, supplier_name]);
+      }
+      if (!item.barcode) warnings.push(`الصنف "${item.name}" بدون باركود — أضيف للمخزن بالاسم فقط`);
+    }
+    await dbRun("UPDATE tamween_replacements SET stock_added = 1, purchase_invoice_number = ? WHERE id = ?", [genInvoiceNumber, repId]);
+    await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, 'فاتورة شراء استعاضة', ?)", [
+      new Date().toISOString(), "النظام",
+      `تم إنشاء فاتورة شراء ${genInvoiceNumber} بقيمة ${total_value} ج.م من مخزن التموين عبر استعاضة #${repId}`
+    ]);
+    return { generated: true, genInvoiceNumber, warnings };
+  }
+
+  async function reverseReplacementStock(rep: any) {
+    if (!rep) return;
+    try {
+      const items = Array.isArray(rep.items_json) ? rep.items_json : JSON.parse(rep.items_json || "[]");
+      for (const item of (items || [])) {
+        if (!item.barcode) continue;
+        const existing = await dbGet("SELECT quantity, is_unlimited FROM items WHERE barcode = ?", [item.barcode]);
+        if (existing && existing.is_unlimited !== 1) {
+          await dbRun("UPDATE items SET quantity = MAX(0, quantity - ?) WHERE barcode = ?", [Number(item.quantity) || 0, item.barcode]);
+        }
+      }
+    } catch {}
+    try {
+      if (rep.purchase_invoice_number) {
+        const inv = await dbGet("SELECT id FROM invoices WHERE invoice_number = ?", [rep.purchase_invoice_number]);
+        if (inv) {
+          await dbRun("DELETE FROM invoice_items WHERE invoice_id = ?", [inv.id]);
+          await dbRun("DELETE FROM invoices WHERE id = ?", [inv.id]);
+        }
+      }
+    } catch {}
+  }
   app.get("/api/tamween/monthly-report", async (req, res) => {
     try {
       const month = req.query.month as string || new Date().toISOString().slice(0, 7);
@@ -2951,58 +3697,26 @@ async function startServer() {
       const { date, invoice_number, supplier_name, items_description, items, total_value, status, notes } = req.body;
       const created_at = new Date().toISOString();
       const itemsJson = items ? JSON.stringify(items) : null;
-      
+
       await dbRun(
         "INSERT INTO tamween_replacements (date, invoice_number, supplier_name, items_description, items_json, total_value, status, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [date, invoice_number || "", supplier_name || "", items_description || "", itemsJson, total_value || 0, status || "pending", notes || "", created_at]
       );
-      
+
       const invIdRow = await dbGet("SELECT last_insert_rowid() as id");
       const replacementId = invIdRow.id;
 
-      // Auto-create purchase invoice from tamween supplier if items provided
-      if (items && Array.isArray(items) && items.length > 0) {
-        const supRecord = await dbGet("SELECT id FROM suppliers WHERE name = ? AND is_tamween_supplier = 1", [supplier_name]);
-        if (supRecord) {
-          const genInvoiceNumber = `RE-${date.replace(/-/g, "")}-${replacementId}`;
-          await dbRun(
-            `INSERT INTO invoices (invoice_number, type, date, customer_supplier_name, payment_source, sale_type, subtotal, tax, discount, total, paid, remaining, created_by, created_at)
-             VALUES (?, 'purchases', ?, ?, 'main_safe', NULL, ?, 0, 0, ?, 0, 0, 'النظام', ?)`,
-            [genInvoiceNumber, date, supplier_name, total_value || 0, total_value || 0, created_at]
-          );
-          const invIdRow2 = await dbGet("SELECT last_insert_rowid() as id");
-          const invoiceId = invIdRow2.id;
-
-          for (const item of items) {
-            await dbRun(
-              `INSERT INTO invoice_items (invoice_id, barcode, name, quantity, unit, price, cost_price, total) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-              [invoiceId, item.barcode, item.name, item.quantity, item.unit || "قطعة", item.purchase_price, item.purchase_price, (item.quantity || 0) * (item.purchase_price || 0)]
-            );
-            // Update stock
-            const existing = await dbGet("SELECT id, quantity, is_unlimited FROM items WHERE barcode = ?", [item.barcode]);
-            if (existing) {
-              const newQty = existing.is_unlimited === 1 ? existing.quantity : (existing.quantity + Number(item.quantity));
-              await dbRun("UPDATE items SET quantity = ?, supplier_id = COALESCE(?, supplier_id), supplier_name = COALESCE(?, supplier_name) WHERE barcode = ?",
-                [newQty, supRecord.id, supplier_name, item.barcode]);
-            } else {
-              await dbRun(`INSERT INTO items (barcode, name, purchase_price, retail_price, wholesale_price, quantity, unit, low_stock_limit, category, is_tamween, is_unlimited, supplier_id, supplier_name)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 10, 'تموين', 0, 0, ?, ?)`,
-                [item.barcode, item.name, item.purchase_price, (item.purchase_price || 0) * 1.2, item.purchase_price || 0, item.quantity || 0, item.unit || "قطعة", supRecord.id, supplier_name]);
-            }
-          }
-
-          await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, 'فاتورة شراء استعاضة', ?)", [
-            new Date().toISOString(), "النظام",
-            `تم إنشاء فاتورة شراء ${genInvoiceNumber} بقيمة ${total_value} ج.م من مخزن التموين عبر استعاضة #${replacementId}`
-          ]);
-        }
+      // الاستلام يغذي المخزن + فاتورة شراء تلقائياً (مرة واحدة، للمورد التمويني فقط)
+      let stockInfo: any = { generated: false, genInvoiceNumber: "", warnings: [] };
+      if ((status || "pending") === "received" && items && Array.isArray(items) && items.length > 0) {
+        stockInfo = await applyReplacementStock(replacementId, supplier_name || "", date, items, total_value || 0);
       }
 
       await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, 'استعاضة تموين', ?)", [
         new Date().toISOString(), "النظام",
         `تم إضافة استعاضة بقيمة ${total_value} ج.م من ${supplier_name}`
       ]);
-      res.json({ success: true, invoice_generated: !!items && Array.isArray(items) && items.length > 0 });
+      res.json({ success: true, id: replacementId, invoice_generated: stockInfo.generated, purchase_invoice_number: stockInfo.genInvoiceNumber, warnings: stockInfo.warnings });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -3011,12 +3725,23 @@ async function startServer() {
   app.put("/api/tamween-replacements/:id", async (req, res) => {
     try {
       const { id } = req.params;
-      const { date, invoice_number, supplier_name, items_description, total_value, status, notes } = req.body;
+      const { date, invoice_number, supplier_name, items_description, items, total_value, status, notes } = req.body;
+      const old: any = await dbGet("SELECT * FROM tamween_replacements WHERE id = ?", [id]);
+      if (!old) return res.status(404).json({ error: "الاستعاضة غير موجودة" });
+      const itemsJson = items !== undefined ? (items ? JSON.stringify(items) : null) : old.items_json;
       await dbRun(
-        "UPDATE tamween_replacements SET date=?, invoice_number=?, supplier_name=?, items_description=?, total_value=?, status=?, notes=? WHERE id=?",
-        [date, invoice_number || "", supplier_name || "", items_description || "", total_value || 0, status || "pending", notes || "", id]
+        "UPDATE tamween_replacements SET date=?, invoice_number=?, supplier_name=?, items_description=?, items_json=?, total_value=?, status=?, notes=? WHERE id=?",
+        [date, invoice_number || "", supplier_name || "", items_description || "", itemsJson, total_value || 0, status || "pending", notes || "", id]
       );
-      res.json({ success: true });
+      // مزامنة المخزن: عكس القديم ثم تطبيق الجديد (مرة واحدة فقط)
+      await reverseReplacementStock(old);
+      await dbRun("UPDATE tamween_replacements SET stock_added = 0, purchase_invoice_number = '' WHERE id = ?", [id]);
+      let stockInfo: any = { generated: false, genInvoiceNumber: "", warnings: [] };
+      const newItems = items !== undefined ? (items || []) : [];
+      if ((status || "pending") === "received" && Array.isArray(newItems) && newItems.length > 0) {
+        stockInfo = await applyReplacementStock(Number(id), supplier_name || "", date, newItems, total_value || 0);
+      }
+      res.json({ success: true, invoice_generated: stockInfo.generated, purchase_invoice_number: stockInfo.genInvoiceNumber, warnings: stockInfo.warnings });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -3025,6 +3750,9 @@ async function startServer() {
   app.delete("/api/tamween-replacements/:id", async (req, res) => {
     try {
       const { id } = req.params;
+      const old: any = await dbGet("SELECT * FROM tamween_replacements WHERE id = ?", [id]);
+      // عكس أثر المخزن/المشتريات قبل الحذف حتى لا تتبقى كميات يتيمة
+      await reverseReplacementStock(old);
       await dbRun("DELETE FROM tamween_replacements WHERE id=?", [id]);
       res.json({ success: true });
     } catch (err: any) {
@@ -3082,6 +3810,106 @@ async function startServer() {
         monthly: monthlyData,
         monthly_details: monthlyDetails,
       });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // API - Tamween Replacements Remaining (المتبقي — توزيع FIFO على الاستعاضات بالترتيب)
+  app.get("/api/tamween-replacements/remaining", async (req, res) => {
+    try {
+      const month = req.query.month as string;
+      let query = "SELECT * FROM tamween_replacements ORDER BY date DESC";
+      let params: any[] = [];
+      if (month) {
+        query = "SELECT * FROM tamween_replacements WHERE date LIKE ? ORDER BY date DESC";
+        params = [`${month}%`];
+      }
+      const replacements = await dbAll(query, params);
+
+      // إجمالي المباع لكل باركود في نفس الشهر فقط (بدون المرتجعات)
+      const salesRows: any[] = month
+        ? await dbAll(
+            `SELECT ii.barcode as barcode, COALESCE(SUM(ii.quantity), 0) as sold
+             FROM invoice_items ii
+             JOIN invoices i ON ii.invoice_id = i.id
+             WHERE ii.barcode IS NOT NULL AND ii.barcode != '' AND i.type = 'sales'
+             AND (i.status != 'returned' OR i.status IS NULL) AND i.date LIKE ?
+             GROUP BY ii.barcode`,
+            [`${month}%`]
+          )
+        : [];
+      const soldPool: Record<string, number> = {};
+      salesRows.forEach((r: any) => { soldPool[r.barcode] = Number(r.sold || 0); });
+
+      // توزيع المباع على الاستعاضات بالترتيب الزمني (الأقدم أولاً) — كل استعاضة تخصم نصيبها فقط
+      const asc = [...replacements].sort((a: any, b: any) => String(a.date || "").localeCompare(String(b.date || "")));
+      const consumed: Record<string, number> = {};
+      const allocByRep: Record<number, Record<string, number>> = {};
+      for (const rep of asc) {
+        let items: any[] = [];
+        try { items = JSON.parse(rep.items_json || "[]"); } catch { items = []; }
+        allocByRep[rep.id] = {};
+        for (const item of items) {
+          const bc = item.barcode || "";
+          const original = Number(item.quantity) || 0;
+          const poolLeft = Math.max(0, (soldPool[bc] || 0) - (consumed[bc] || 0));
+          const alloc = bc ? Math.min(original, poolLeft) : 0;
+          consumed[bc] = (consumed[bc] || 0) + alloc;
+          allocByRep[rep.id][`${bc}__${item.name}`] = alloc;
+        }
+      }
+
+      // For each replacement, calculate remaining quantities
+      const results = await Promise.all(replacements.map(async (rep: any) => {
+        let items = [];
+        try {
+          items = JSON.parse(rep.items_json || "[]");
+        } catch {
+          items = [];
+        }
+
+        // If no items_json, try to get items from the purchase invoice
+        if (items.length === 0 && rep.invoice_number) {
+          try {
+            const invoice = await dbGet("SELECT id FROM invoices WHERE invoice_number = ?", [rep.invoice_number]);
+            if (invoice) {
+              const invoiceItems = await dbAll("SELECT * FROM invoice_items WHERE invoice_id = ?", [invoice.id]);
+              items = invoiceItems.map((ii: any) => ({
+                barcode: ii.barcode,
+                name: ii.name,
+                quantity: ii.quantity,
+                unit: ii.unit || "قطعة",
+                purchase_price: ii.cost_price || ii.price || 0
+              }));
+            }
+          } catch (e) {
+            console.log("[Remaining] Could not fetch invoice items:", e);
+          }
+        }
+
+        // النصيب المخصوم لهذه الاستعاضة فقط (FIFO) — مش إجمالي المباع كله
+        const remainingItems = items.map((item: any) => {
+          const bc = item.barcode || "";
+          const original = Number(item.quantity) || 0;
+          const sold = allocByRep[rep.id]?.[`${bc}__${item.name}`] ?? 0;
+          const remaining = Math.max(0, original - sold);
+
+          return {
+            ...item,
+            original_quantity: original,
+            sold_quantity: sold,
+            remaining_quantity: remaining
+          };
+        });
+
+        return {
+          ...rep,
+          items: remainingItems
+        };
+      }));
+
+      res.json(results);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -3202,9 +4030,33 @@ async function startServer() {
     }
   });
 
+  // API - Bread Points Summary (إجمالي نقاط الخبز الشهرية)
+  app.get("/api/tamween-customers/bread-points-summary", async (req, res) => {
+    try {
+      const month = req.query.month as string;
+      
+      // Get all customers with their bread points
+      const customers = await dbAll(
+        "SELECT name, secret_number, bread_points FROM tamween_customers WHERE bread_points > 0 ORDER BY bread_points DESC"
+      );
+      
+      // Calculate total
+      const totalPoints = customers.reduce((sum: number, c: any) => sum + (c.bread_points || 0), 0);
+      
+      res.json({
+        month: month || "الكل",
+        total_points: totalPoints,
+        customer_count: customers.length,
+        customers: customers
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post("/api/tamween-customers", async (req, res) => {
     try {
-      const { name, secret_number, phone, card_value, bread_points } = req.body;
+      const { name, secret_number, phone, card_value, bread_points, pending_sale } = req.body;
       if (!name || !secret_number) {
         return res.status(400).json({ error: "اسم العميل والرقم السري مطلوبين" });
       }
@@ -3212,9 +4064,10 @@ async function startServer() {
       if (exists) {
         return res.status(400).json({ error: "الرقم السري مسجل بالفعل لعميل آخر" });
       }
+      const pendingJson = pending_sale ? JSON.stringify(pending_sale) : "";
       await dbRun(
-        "INSERT INTO tamween_customers (name, secret_number, phone, card_value, bread_points, status, status_month, created_at) VALUES (?, ?, ?, ?, ?, '', '', ?)",
-        [name, secret_number, phone || "", card_value || 0, bread_points || 0, new Date().toISOString()]
+        "INSERT INTO tamween_customers (name, secret_number, phone, card_value, bread_points, pending_sale_json, status, status_month, created_at) VALUES (?, ?, ?, ?, ?, ?, '', '', ?)",
+        [name, secret_number, phone || "", card_value || 0, bread_points || 0, pendingJson, new Date().toISOString()]
       );
       const newCustomer = await dbGet("SELECT * FROM tamween_customers WHERE secret_number = ?", [secret_number]);
       res.json({ success: true, customer: newCustomer });
@@ -3226,12 +4079,36 @@ async function startServer() {
   app.put("/api/tamween-customers/:id", async (req, res) => {
     try {
       const { id } = req.params;
-      const { name, secret_number, phone, card_value, bread_points } = req.body;
-      await dbRun(
-        "UPDATE tamween_customers SET name=?, secret_number=?, phone=?, card_value=?, bread_points=? WHERE id=?",
-        [name, secret_number, phone, card_value, bread_points, id]
-      );
+      const { name, secret_number, phone, card_value, bread_points, pending_sale } = req.body;
+      if (pending_sale !== undefined) {
+        const pendingJson = pending_sale ? JSON.stringify(pending_sale) : "";
+        await dbRun(
+          "UPDATE tamween_customers SET name=?, secret_number=?, phone=?, card_value=?, bread_points=?, pending_sale_json=? WHERE id=?",
+          [name, secret_number, phone, card_value, bread_points, pendingJson, id]
+        );
+      } else {
+        await dbRun(
+          "UPDATE tamween_customers SET name=?, secret_number=?, phone=?, card_value=?, bread_points=? WHERE id=?",
+          [name, secret_number, phone, card_value, bread_points, id]
+        );
+      }
       res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Get pending (later) sale snapshot for full restore on "صرف الآن"
+  app.get("/api/tamween-customers/:id/pending-sale", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const customer = await dbGet("SELECT pending_sale_json FROM tamween_customers WHERE id = ?", [id]);
+      if (!customer || !customer.pending_sale_json) return res.json({ success: true, pendingSale: null });
+      try {
+        return res.json({ success: true, pendingSale: JSON.parse(customer.pending_sale_json) });
+      } catch {
+        return res.json({ success: true, pendingSale: null });
+      }
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -3257,6 +4134,9 @@ async function startServer() {
       if (customer.status === "withdrawn" && customer.status_month === currentMonth) {
         return res.status(400).json({ error: "العميل اصرف الشهر ده بالفعل - ممنوع" });
       }
+      if (!(Number(customer.card_value) > 0)) {
+        return res.status(400).json({ error: "لا يمكن الحفظ كصرف لاحق بدون كارت تموين (قيمة البطاقة = 0)." });
+      }
       await dbRun("UPDATE tamween_customers SET status = 'later', status_month = ? WHERE id = ?", [currentMonth, id]);
       res.json({ success: true });
     } catch (err: any) {
@@ -3274,7 +4154,10 @@ async function startServer() {
       if (customer.status === "withdrawn" && customer.status_month === currentMonth) {
         return res.status(400).json({ error: "العميل اصرف الشهر ده بالفعل - ممنوع الصرف المكرر" });
       }
-      await dbRun("UPDATE tamween_customers SET status = 'withdrawn', status_month = ? WHERE id = ?", [currentMonth, id]);
+      if (!(Number(customer.card_value) > 0)) {
+        return res.status(400).json({ error: "لا يمكن الصرف بدون كارت تموين (قيمة البطاقة = 0)." });
+      }
+      await dbRun("UPDATE tamween_customers SET status = 'withdrawn', status_month = ?, pending_sale_json = '' WHERE id = ?", [currentMonth, id]);
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -3290,26 +4173,39 @@ async function startServer() {
     }
   });
 
-  // Get customer transaction history
+  // Get customer transaction history — full record for review any day
   app.get("/api/tamween-customers/:id/history", async (req, res) => {
     try {
       const { id } = req.params;
       const customer = await dbGet("SELECT * FROM tamween_customers WHERE id = ?", [id]);
       if (!customer) return res.status(404).json({ error: "العميل غير موجود" });
       
-      // Get all invoices for this customer
-      const invoices = await dbAll(
-        "SELECT * FROM invoices WHERE customer_supplier_name = ? AND type = 'sales' ORDER BY date DESC, id DESC",
-        [customer.name]
-      );
+      // Link by stable ID first, fallback to name/secret for old invoices (before ID linking)
+      let invoices: any[] = [];
+      try {
+        invoices = await dbAll(
+          "SELECT id, invoice_number, date, customer_supplier_name, subtotal, discount, tamween_discount, bread_points, bonus, total, paid, remaining, status, created_by, created_at, tamween_customer_id, secret_number FROM invoices WHERE type = 'sales' AND (tamween_customer_id = ? OR customer_supplier_name = ? OR secret_number = ?) ORDER BY date DESC, id DESC",
+          [customer.id, customer.name, customer.secret_number]
+        );
+      } catch {
+        invoices = await dbAll(
+          "SELECT * FROM invoices WHERE customer_supplier_name = ? AND type = 'sales' ORDER BY date DESC, id DESC",
+          [customer.name]
+        );
+      }
+
+      // Attach exact cart items per invoice so review shows what was disbursed
+      const invoicesWithItems: any[] = [];
+      for (const inv of (invoices as any[])) {
+        try {
+          const items = await dbAll("SELECT * FROM invoice_items WHERE invoice_id = ?", [inv.id]);
+          invoicesWithItems.push({ ...inv, items });
+        } catch {
+          invoicesWithItems.push({ ...inv, items: [] });
+        }
+      }
       
-      // Get customer replacements (if any)
-      const replacements = await dbAll(
-        "SELECT * FROM tamween_replacements WHERE customer_name = ? ORDER BY id DESC",
-        [customer.name]
-      );
-      
-      res.json({ customer, invoices, replacements });
+      res.json({ customer, invoices: invoicesWithItems, replacements: [] });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -3405,28 +4301,85 @@ async function startServer() {
     }
   });
 
+  // حساب الآجل — فواتير مبيعات عليها متبقي (دين على العملاء)
+  app.get("/api/credit/sales", async (req, res) => {
+    try {
+      const list = await dbAll(
+        `SELECT id, invoice_number, date, customer_supplier_name, secret_number, total, paid, remaining, payment_method, payment_source, created_by, created_at
+         FROM invoices
+         WHERE type = 'sales' AND remaining > 0 AND (status IS NULL OR status != 'returned')
+         ORDER BY date DESC, id DESC`
+      );
+      const summary = await dbGet(
+        `SELECT COALESCE(SUM(remaining), 0) as total_remaining, COUNT(*) as count
+         FROM invoices
+         WHERE type = 'sales' AND remaining > 0 AND (status IS NULL OR status != 'returned')`
+      );
+      res.json({ invoices: list, summary });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // تحصيل دفعة من فاتورة آجلة
+  app.post("/api/credit/:id/collect", async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const { amount, payment_source, user_name } = req.body;
+      const pay = Number(amount);
+      if (!(pay > 0)) return res.status(400).json({ error: "المبلغ غير صحيح" });
+      const inv: any = await dbGet(
+        "SELECT * FROM invoices WHERE id = ? AND type = 'sales' AND remaining > 0 AND (status IS NULL OR status != 'returned')",
+        [id]
+      );
+      if (!inv) return res.status(404).json({ error: "فاتورة آجلة غير موجودة" });
+      if (pay > Number(inv.remaining) + 0.001) {
+        return res.status(400).json({ error: `المبلغ أكبر من المتبقي (${Number(inv.remaining).toFixed(2)} ج.م)` });
+      }
+      const newRemaining = Math.max(0, Number(inv.remaining) - pay);
+      const newPaid = Number(inv.paid || 0) + pay;
+      const src = payment_source === "main_safe" ? "main_safe" : "cash_register";
+      await dbRun("UPDATE invoices SET paid = ?, remaining = ? WHERE id = ?", [newPaid, newRemaining, id]);
+      // إيداع في الخزنة/الدرج
+      await dbRun(
+        "INSERT INTO treasury_transactions (type, amount, source, destination, date, notes, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ["deposit", pay, src, src, new Date().toISOString(), `تحصيل آجل فاتورة ${inv.invoice_number} — ${inv.customer_supplier_name || ""}`, user_name || "الكاشير"]
+      );
+      await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, 'تحصيل آجل', ?)", [
+        new Date().toISOString(),
+        user_name || "الكاشير",
+        `تحصيل ${pay.toFixed(2)} ج.م من فاتورة آجلة ${inv.invoice_number} للعميل ${inv.customer_supplier_name || "—"} — المتبقي بعد التحصيل: ${newRemaining.toFixed(2)} ج.م`
+      ]);
+      res.json({ success: true, remaining: newRemaining, paid: newPaid });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post("/api/held-invoices", async (req, res) => {
     try {
       const { invoices } = req.body;
       if (!invoices || !Array.isArray(invoices)) return res.json({ success: true });
-      for (const inv of invoices) {
+      // Replace-all (not replace-per-index) so closed tabs don't resurrect as ghosts after restart
+      await dbRun("DELETE FROM held_invoices");
+      for (const [idx, inv] of (invoices as any[]).entries()) {
         await dbRun(
-          `INSERT OR REPLACE INTO held_invoices (tab_index, cart_json, customer_name, secret_number, sale_type, payment_method, payment_source, discount, tamween_cards_json, bread_points, bonus, paid, invoice_number, date, label, created_at)
+          `INSERT INTO held_invoices (tab_index, cart_json, customer_name, secret_number, sale_type, payment_method, payment_source, discount, tamween_cards_json, bread_points, bonus, paid, invoice_number, date, label, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
-            inv.tab_index ?? 0,
+            idx,
             JSON.stringify(inv.cart ?? []),
-            inv.customer_name ?? "",
-            inv.secret_number ?? "",
-            inv.sale_type ?? "retail",
-            inv.payment_method ?? "cash",
-            inv.payment_source ?? "cash_register",
+            inv.customer_name ?? inv.customerName ?? "",
+            inv.secret_number ?? inv.secretNumber ?? "",
+            inv.sale_type ?? inv.saleType ?? "retail",
+            inv.payment_method ?? inv.paymentMethod ?? "cash",
+            inv.payment_source ?? inv.paymentSource ?? "cash_register",
             inv.discount ?? 0,
-            JSON.stringify(inv.tamween_cards ?? []),
-            inv.bread_points ?? 0,
+            JSON.stringify(inv.tamween_cards ?? inv.tamweenCards ?? []),
+            inv.bread_points ?? inv.breadPoints ?? 0,
             inv.bonus ?? 0,
             inv.paid ?? 0,
-            inv.invoice_number ?? "",
+            inv.invoice_number ?? inv.invoiceNumber ?? "",
             inv.date ?? "",
             inv.label ?? "",
             new Date().toISOString(),
@@ -3435,7 +4388,7 @@ async function startServer() {
       }
       res.json({ success: true });
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(500).json({ error: (e as any).message });
     }
   });
 
@@ -3445,6 +4398,83 @@ async function startServer() {
       res.json({ success: true });
     } catch (e) {
       res.status(500).json({ error: e.message });
+    }
+  });
+
+  // API - Active Cart (الكارت النشط)
+  app.get("/api/active-cart", async (req, res) => {
+    try {
+      const row = await dbGet("SELECT * FROM active_carts WHERE id = 1");
+      if (!row) return res.json(null);
+      res.json({
+        cart: row.cart_json ? JSON.parse(row.cart_json) : [],
+        customerName: row.customer_name || "",
+        secretNumber: row.secret_number || "",
+        saleType: row.sale_type || "retail",
+        paymentMethod: row.payment_method || "cash",
+        paymentSource: row.payment_source || "cash_register",
+        discount: row.discount || 0,
+        tamweenCards: row.tamween_cards_json ? JSON.parse(row.tamween_cards_json) : [],
+        breadPoints: row.bread_points || 0,
+        bonus: row.bonus || 0,
+        paid: row.paid || 0,
+        invoiceNumber: row.invoice_number || "",
+        date: row.date || "",
+        activeTabIndex: row.active_tab_index || 0,
+      });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/active-cart", async (req, res) => {
+    try {
+      const b = req.body;
+      await dbRun(
+        `INSERT OR REPLACE INTO active_carts (id, cart_json, customer_name, secret_number, sale_type, payment_method, payment_source, discount, tamween_cards_json, bread_points, bonus, paid, invoice_number, date, active_tab_index)
+         VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          JSON.stringify(b.cart ?? []),
+          b.customerName ?? "",
+          b.secretNumber ?? "",
+          b.saleType ?? "retail",
+          b.paymentMethod ?? "cash",
+          b.paymentSource ?? "cash_register",
+          b.discount ?? 0,
+          JSON.stringify(b.tamweenCards ?? []),
+          b.breadPoints ?? 0,
+          b.bonus ?? 0,
+          b.paid ?? 0,
+          b.invoiceNumber ?? "",
+          b.date ?? "",
+          b.activeTabIndex ?? 0,
+        ]
+      );
+      res.json({ success: true });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete("/api/active-cart", async (req, res) => {
+    try {
+      await dbRun("DELETE FROM active_carts WHERE id = 1");
+      res.json({ success: true });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // API - Get invoice items by invoice number (تفاصيل الفاتورة)
+  app.get("/api/invoices/by-number/:number", async (req, res) => {
+    try {
+      const { number } = req.params;
+      const invoice = await dbGet("SELECT * FROM invoices WHERE invoice_number = ?", [number]);
+      if (!invoice) return res.status(404).json({ error: "الفاتورة غير موجودة" });
+      const items = await dbAll("SELECT * FROM invoice_items WHERE invoice_id = ?", [invoice.id]);
+      res.json({ invoice, items });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
     }
   });
 
@@ -3486,8 +4516,20 @@ async function startServer() {
     console.error("[Backup] Startup backup failed:", e);
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+  // الجهاز بيشتغل على جهاز واحد فقط (قرار المالك) → نربط السيرفر على 127.0.0.1
+  // عشان مايبانش على الشبكة المحلية خالص. على الحاويات/Railway لازم 0.0.0.0.
+  // عايز تفتحه لجهاز تاني على الشبكة؟ اعمل: HOST=0.0.0.0
+  const isContainer = !!(
+    process.env.RAILWAY_ENVIRONMENT ||
+    process.env.RAILWAY_PROJECT_ID ||
+    process.env.RAILWAY_PUBLIC_DOMAIN ||
+    process.env.KUBERNETES_SERVICE_HOST ||
+    process.env.RENDER ||
+    process.env.DYNO
+  );
+  const HOST = process.env.HOST || (isContainer ? "0.0.0.0" : "127.0.0.1");
+  app.listen(PORT, HOST, () => {
+    console.log(`Server running on http://localhost:${PORT} (bound to ${HOST})`);
   });
 
   // Auto-backup every hour (keep last 24 copies)

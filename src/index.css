@@ -1,12 +1,9 @@
 @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&family=JetBrains+Mono:wght@400;600;800&family=Inter:wght@400;600;700;800&display=swap');
 @import "tailwindcss";
-@import "./themes/royal-captain.css";
-@import "./themes/midnight-emerald.css";
-@import "./themes/platinum-navy.css";
-@import "./themes/obsidian-platinum.css";
-@import "./themes/midnight-sapphire.css";
-@import "./themes/velvet-noir.css";
 @import "./themes/pure-white.css";
+@import "./themes/nordic-mist.css";
+@import "./themes/warm-ivory.css";
+@import "./themes/captain-nocturne.css";
 
 @theme {
   --font-sans: "Cairo", "Inter", ui-sans-serif, system-ui, sans-serif;
@@ -133,10 +130,15 @@ th, td {
   }
   .printable-receipt {
     position: absolute;
-    left: 0;
+    left: 50%;
+    right: auto;
     top: 0;
-    width: 76mm;
-    padding: 2mm 1mm;
+    width: 72mm;
+    max-width: 72mm;
+    box-sizing: border-box;
+    transform: translateX(calc(-50% - 2mm));
+    margin: 0;
+    padding: 2mm 3mm;
     background: #ffffff;
     color: #000000;
     font-size: 9px;
@@ -146,6 +148,28 @@ th, td {
   }
   .no-print {
     display: none !important;
+  }
+
+  /* الإيصال المطبوع ورق أبيض بحبر أسود مهما كان الثيم على الشاشة،
+     وشريط "الصافي" يرجع شريط أسود بنص أبيض (كلاسيك الإيصالات). */
+  .printable-receipt, .printable-receipt * { color: #000000 !important; }
+  .printable-receipt .pos-total-bar { background: #000000 !important; color: #ffffff !important; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+
+  /* A4/isolated print: print ONLY the target area (used by printA4 path) */
+  body.printing-isolate * {
+    visibility: hidden;
+  }
+  body.printing-isolate .print-target,
+  body.printing-isolate .print-target * {
+    visibility: visible;
+  }
+  body.printing-isolate .print-target {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    margin: 0 auto;
+    background: #ffffff;
   }
 }
 
@@ -177,3 +201,17 @@ th, td {
 .shadow-lg { box-shadow: var(--shadow) !important; }
 .shadow-xl { box-shadow: var(--shadow) !important; }
 .shadow-2xl { box-shadow: var(--shadow) !important; }
+
+/* 🔔 هزة تنبيه تلفت الانتباه — ملئ الحقول وأي رسالة خطأ */
+@keyframes cap-shake {
+  0%, 100% { transform: translateX(0); }
+  15% { transform: translateX(-7px); }
+  30% { transform: translateX(6px); }
+  45% { transform: translateX(-5px); }
+  60% { transform: translateX(4px); }
+  75% { transform: translateX(-3px); }
+  90% { transform: translateX(2px); }
+}
+.cap-shake {
+  animation: cap-shake 0.5s ease-in-out 2;
+}

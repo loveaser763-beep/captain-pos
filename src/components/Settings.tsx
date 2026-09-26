@@ -50,7 +50,19 @@ export default function Settings({ currentUser }: SettingsProps) {
   const [partnersError, setPartnersError] = useState("");
   const [partnersSuccess, setPartnersSuccess] = useState("");
   const [savingPartner, setSavingPartner] = useState(false);
-  const [partnerForm, setPartnerForm] = useState({ id: 0, name: "", fixed_profit_percentage: 0, purchase_percentage: 0 });
+  const [partnerForm, setPartnerForm] = useState({ id: 0, name: "", fixed_profit_percentage: 0, purchase_percentage: 0, fixed_profit_amount: 0, profit_mode: "percent" });
+  // إجمالي الأرباح والمشتريات — أساس النسبة التلقائية في فورم الشريك
+  const [statsProfit, setStatsProfit] = useState(0);
+  const [statsPurchases, setStatsPurchases] = useState(0);
+  useEffect(() => {
+    authFetch("/api/dashboard/stats")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((s) => {
+        setStatsProfit(Number(s?.profit) || 0);
+        setStatsPurchases(Number(s?.purchases?.total) || 0);
+      })
+      .catch(() => {});
+  }, []);
 
   // Full System Snapshot State
   const [snapshots, setSnapshots] = useState<any[]>([]);
@@ -105,7 +117,7 @@ export default function Settings({ currentUser }: SettingsProps) {
       const res = await authFetch("/api/system/restore-snapshot", { method: "POST", body: formData });
       const data = await res.json();
       if (res.ok && data.success) {
-        alert(data.message + " سيتوقف السيرفر الآن - شغله من start-3001.bat");
+        alert(data.message + " سيتوقف السيرفر الآن - أعد فتحه من شغل البرنامج.bat");
       } else {
         alert(data.error || "فشلت الاستعادة");
       }
@@ -116,7 +128,7 @@ export default function Settings({ currentUser }: SettingsProps) {
     }
   };
 
-  const isAdmin = currentUser?.role === "admin";
+  const isAdmin = currentUser?.role === "admin" || currentUser?.role === "developer";
 
   const fetchSettings = async () => {
     setLoading(true);
@@ -158,11 +170,15 @@ export default function Settings({ currentUser }: SettingsProps) {
   useEffect(() => {
     fetchSettings();
     fetchPartners();
-    // Load printer settings from localStorage
-    const savedPrinterType = localStorage.getItem("captain_printer_type") || "thermal-80";
-    const savedPrinterName = localStorage.getItem("captain_printer_name") || "";
-    setPrinterType(savedPrinterType);
-    setPrinterName(savedPrinterName);
+    // Load printer settings from disk (server settings)
+    authFetch("/api/settings")
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => {
+        if (!data) return;
+        if (data.printer_type) setPrinterType(data.printer_type);
+        if (data.printer_name !== undefined) setPrinterName(data.printer_name || "");
+      })
+      .catch(() => {});
   }, []);
 
   const handleSavePartner = async (e: React.FormEvent) => {
@@ -191,6 +207,7 @@ export default function Settings({ currentUser }: SettingsProps) {
           name: partnerForm.name.trim(),
           fixed_profit_percentage: partnerForm.fixed_profit_percentage,
           purchase_percentage: partnerForm.purchase_percentage,
+          fixed_profit_amount: partnerForm.profit_mode === "fixed" ? partnerForm.fixed_profit_amount : 0,
           logCreator: currentUser?.name || "المدير العام"
         })
       });
@@ -201,7 +218,7 @@ export default function Settings({ currentUser }: SettingsProps) {
       }
 
       setPartnersSuccess(isEdit ? "تم تحديث بيانات الشريك بنجاح." : "تم تسجيل الشريك الجديد بنجاح.");
-      setPartnerForm({ id: 0, name: "", fixed_profit_percentage: 0, purchase_percentage: 0 });
+      setPartnerForm({ id: 0, name: "", fixed_profit_percentage: 0, purchase_percentage: 0, fixed_profit_amount: 0, profit_mode: "percent" });
       fetchPartners();
     } catch (err: any) {
       setPartnersError(err.message || "حدث خطأ أثناء حفظ الشريك.");
@@ -231,7 +248,7 @@ export default function Settings({ currentUser }: SettingsProps) {
 
       setPartnersSuccess("تم حذف الشريك بنجاح.");
       if (partnerForm.id === id) {
-        setPartnerForm({ id: 0, name: "", fixed_profit_percentage: 0, purchase_percentage: 0 });
+        setPartnerForm({ id: 0, name: "", fixed_profit_percentage: 0, purchase_percentage: 0, fixed_profit_amount: 0, profit_mode: "percent" });
       }
       fetchPartners();
     } catch (err: any) {
@@ -265,10 +282,6 @@ export default function Settings({ currentUser }: SettingsProps) {
       }
 
       setMessage("تم تحديث إعدادات المتجر بنجاح.");
-      
-      localStorage.setItem("supermarket_market_name", settings.market_name);
-      localStorage.setItem("supermarket_market_phone", settings.market_phone);
-      localStorage.setItem("supermarket_tax_rate", settings.tax_rate);
     } catch (err: any) {
       setError(err.message || "حدث خطأ غير متوقع.");
     } finally {
@@ -460,7 +473,11 @@ export default function Settings({ currentUser }: SettingsProps) {
                 value={printerType}
                 onChange={(e) => {
                   setPrinterType(e.target.value);
-                  localStorage.setItem("captain_printer_type", e.target.value);
+                  authFetch("/api/settings", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ settings: { printer_type: e.target.value }, user_name: currentUser?.name || "المدير العام" }),
+                  }).catch(() => {});
                 }}
                 className="w-full h-9 bg-[#b8bcb2] border border-[#888888] px-3 text-right text-xs font-bold text-[#000000] focus:outline-none focus:border-[#222222] cursor-pointer"
               >
@@ -477,7 +494,11 @@ export default function Settings({ currentUser }: SettingsProps) {
                 value={printerName}
                 onChange={(e) => {
                   setPrinterName(e.target.value);
-                  localStorage.setItem("captain_printer_name", e.target.value);
+                  authFetch("/api/settings", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ settings: { printer_name: e.target.value }, user_name: currentUser?.name || "المدير العام" }),
+                  }).catch(() => {});
                 }}
                 placeholder="اتركه فارغاً للاختيار التلقائي..."
                 className="w-full h-9 bg-[#b8bcb2] border border-[#888888] px-3 text-right text-xs font-bold text-[#000000] focus:outline-none focus:border-[#222222]"
@@ -509,7 +530,7 @@ export default function Settings({ currentUser }: SettingsProps) {
           </div>
           <button
             onClick={() => {
-              setPartnerForm({ id: 0, name: "", fixed_profit_percentage: 0, purchase_percentage: 0 });
+              setPartnerForm({ id: 0, name: "", fixed_profit_percentage: 0, purchase_percentage: 0, fixed_profit_amount: 0, profit_mode: "percent" });
               setPartnersError("");
               setPartnersSuccess("");
             }}
@@ -548,21 +569,60 @@ export default function Settings({ currentUser }: SettingsProps) {
                   value={partnerForm.name}
                   onChange={(e) => setPartnerForm({ ...partnerForm, name: e.target.value })}
                   placeholder="اسم الشريك..."
-                  required
-                  className="w-full h-9 bg-[#c3c6bb] border border-[#888888] px-3 text-right text-xs font-bold text-[#000000] focus:outline-none focus:border-[#222222]"
-                />
+                    required
+                    className="w-full h-9 bg-[#c3c6bb] border border-[#888888] px-3 text-right text-xs font-bold text-[#000000] focus:outline-none focus:border-[#222222]"
+                  />
+                  <p className="text-[10px] font-bold text-[#555555] mt-1 leading-relaxed">
+                    {partnerForm.profit_mode === "fixed"
+                      ? (partnerForm.fixed_profit_amount || 0) > 0
+                        ? statsProfit > 0
+                          ? `تلقائي: ≈ ${((((partnerForm.fixed_profit_amount || 0)) / statsProfit) * 100).toFixed(1)}% من إجمالي الأرباح (${statsProfit.toFixed(2)} ج.م)`
+                          : "مفيش أرباح مسجلة — النسبة مش هتتحسب"
+                        : "اكتب الحصة بالجنيه والنسبة هتتحسب لوحدها من الأرباح"
+                      : (partnerForm.fixed_profit_percentage || 0) > 0
+                        ? statsProfit > 0
+                          ? `تلقائي: ≈ ${((statsProfit * (partnerForm.fixed_profit_percentage || 0)) / 100).toFixed(2)} ج.م من إجمالي الأرباح (${statsProfit.toFixed(2)} ج.م)`
+                          : "مفيش أرباح مسجلة — المبلغ مش هيتحسب"
+                        : "اكتب النسبة والمبلغ المقابل هيتحسب لوحدها من الأرباح"}
+                  </p>
+                </div>
+
+              <div>
+                <label className="block text-[#000000] mb-1">طريقة توزيع الأرباح</label>
+                <div className="flex gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setPartnerForm({ ...partnerForm, profit_mode: "percent", fixed_profit_amount: 0 })}
+                    className={`flex-1 h-8 border text-xs font-bold cursor-pointer transition-colors ${partnerForm.profit_mode !== "fixed" ? "bg-[#222222] text-[#c3c6bb] border-[#222222]" : "bg-[#c3c6bb] text-[#000000] border-[#888888] hover:bg-[#b8bcb2]"}`}
+                  >
+                    ٪ نسبة
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPartnerForm({ ...partnerForm, profit_mode: "fixed" })}
+                    className={`flex-1 h-8 border text-xs font-bold cursor-pointer transition-colors ${partnerForm.profit_mode === "fixed" ? "bg-[#222222] text-[#c3c6bb] border-[#222222]" : "bg-[#c3c6bb] text-[#000000] border-[#888888] hover:bg-[#b8bcb2]"}`}
+                  >
+                    ج.م مبلغ ثابت
+                  </button>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2">
                 <div>
-                  <label className="block text-[#000000] mb-1">نسبة الأرباح (%)</label>
+                  <label className="block text-[#000000] mb-1">
+                    {partnerForm.profit_mode === "fixed" ? "حصة الربح (ج.م)" : "نسبة الأرباح (%)"}
+                  </label>
                   <input
                     type="number"
                     step="0.01"
                     min="0"
-                    max="100"
-                    value={partnerForm.fixed_profit_percentage || ""}
-                    onChange={(e) => setPartnerForm({ ...partnerForm, fixed_profit_percentage: parseFloat(e.target.value) || 0 })}
+                    max={partnerForm.profit_mode === "fixed" ? undefined : 100}
+                    value={partnerForm.profit_mode === "fixed" ? (partnerForm.fixed_profit_amount || "") : (partnerForm.fixed_profit_percentage || "")}
+                    onChange={(e) => {
+                      const v = parseFloat(e.target.value) || 0;
+                      if (partnerForm.profit_mode === "fixed") setPartnerForm({ ...partnerForm, fixed_profit_amount: v });
+                      else setPartnerForm({ ...partnerForm, fixed_profit_percentage: v });
+                    }}
                     required
                     className="w-full h-9 bg-[#c3c6bb] border border-[#888888] px-3 text-right text-xs font-bold text-[#000000] focus:outline-none focus:border-[#222222]"
                   />
@@ -580,6 +640,13 @@ export default function Settings({ currentUser }: SettingsProps) {
                     required
                     className="w-full h-9 bg-[#c3c6bb] border border-[#888888] px-3 text-right text-xs font-bold text-[#000000] focus:outline-none focus:border-[#222222]"
                   />
+                  <p className="text-[10px] font-bold text-[#555555] mt-1 leading-relaxed">
+                    {(partnerForm.purchase_percentage || 0) > 0
+                      ? statsPurchases > 0
+                        ? `تلقائي: = ${((statsPurchases * (partnerForm.purchase_percentage || 0)) / 100).toFixed(2)} ج.م من إجمالي المشتريات (${statsPurchases.toFixed(2)} ج.م)`
+                        : "مفيش مشتريات مسجلة — المبلغ مش هيتحسب"
+                      : "اكتب النسبة والمبلغ المقابل هيتحسب من المشتريات"}
+                  </p>
                 </div>
               </div>
 
@@ -618,15 +685,21 @@ export default function Settings({ currentUser }: SettingsProps) {
                       </div>
                       
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 bg-[#c3c6bb] p-2 border border-[#888888]/40 text-xs">
-                        <div><span className="text-[#555555]">أرباح:</span> {p.fixed_profit_percentage}%</div>
-                        <div><span className="text-[#555555]">مشتريات:</span> {p.purchase_percentage}%</div>
+                        <div><span className="text-[#555555]">أرباح:</span> {(p.fixed_profit_amount || 0) > 0
+                          ? `${p.fixed_profit_amount} ج.م (ثابت)${statsProfit > 0 && p.fixed_profit_amount > 0 ? ` ≈ ${((((p.fixed_profit_amount)) / statsProfit) * 100).toFixed(1)}%` : ""}`
+                          : `${p.fixed_profit_percentage}%${statsProfit > 0 && p.fixed_profit_percentage > 0 ? ` ≈ ${((statsProfit * p.fixed_profit_percentage) / 100).toFixed(2)} ج.م` : ""}`}</div>
+                        <div><span className="text-[#555555]">مشتريات:</span> {p.purchase_percentage}%{statsPurchases > 0 && p.purchase_percentage > 0 ? ` ≈ ${((statsPurchases * p.purchase_percentage) / 100).toFixed(2)} ج.م` : ""}</div>
                       </div>
                     </div>
 
                     <div className="pt-2 border-t border-[#888888]/40 flex justify-end gap-1">
                       <button
                         onClick={() => {
-                          setPartnerForm({ ...p });
+                          setPartnerForm({
+                            ...p,
+                            fixed_profit_amount: p.fixed_profit_amount || 0,
+                            profit_mode: (p.fixed_profit_amount || 0) > 0 ? "fixed" : "percent"
+                          });
                           setPartnersError("");
                           setPartnersSuccess("");
                         }}

@@ -134,7 +134,7 @@ export default function UsersManagement({ currentUser }: UsersProps) {
 
   const handleDelete = async (id: number) => {
     const target = users.find(u => u.id === id);
-    if (target?.username === "innocode") {
+    if (target?.role === "developer") {
       alert("خطأ: لا يمكن حذف حساب مبرمج النظام الحصري.");
       return;
     }
@@ -206,7 +206,6 @@ export default function UsersManagement({ currentUser }: UsersProps) {
       ) : (
         <div className="grid grid-cols-12 gap-4" id="users-grid">
           {users
-            .filter((u) => u.username !== "innocode" || currentUser?.username === "innocode")
             .map((u) => (
             <div
               key={u.id}
@@ -229,7 +228,7 @@ export default function UsersManagement({ currentUser }: UsersProps) {
                     >
                       <Edit2 size={14} strokeWidth={1.5} />
                     </button>
-                    {u.username !== "innocode" && (
+                    {u.role !== "developer" && (
                       <button
                         id={`btn-delete-user-${u.id}`}
                         onClick={() => handleDelete(u.id)}

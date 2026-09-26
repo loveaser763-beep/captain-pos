@@ -184,8 +184,8 @@ table{width:75mm;margin:4px 2.5mm;border-collapse:collapse;table-layout:fixed;bo
 th{font-size:${fs};background:#000;color:#fff;padding:4px 8px;font-weight:900;border-left:1px solid #fff;border-right:1px solid #fff}
 td{font-size:${fs};padding:4px 8px 4px 5px;border-left:1px solid #000;border-right:1px solid #000}
 .totals{display:grid;grid-template-columns:1fr 1fr;gap:3px;margin:4px 2.5mm;width:75mm}
-.total{font-weight:900;font-size:12px;text-align:center;border:2px solid #000;padding:5px;word-break:break-word;line-height:1.3}
-.footer{font-size:11px;font-weight:900;text-align:center;margin:5px 2.5mm 0;padding:4px;border:2px solid #000;color:#000;background:#fff;line-height:1.3;width:75mm}
+.total{font-weight:900;font-size:14px;text-align:center;border:2px solid #000;padding:5px;word-break:break-word;line-height:1.3}
+.footer{font-size:12px;font-weight:900;text-align:center;margin:5px 2.5mm 0;padding:4px;border:2px solid #000;color:#000;background:#fff;line-height:1.3;width:75mm}
 .dateline{font-size:9px;text-align:center;margin:3px 2.5mm}
 </style></head><body><h1>التقفيلة النهائية</h1><h2>${selectedMonth} ${selectedYear} - ${ns === 'zesty' ? 'زيستي (نادي بورتو)' : 'جمعيتي'}</h2><table><tr><th>البند</th><th style="width:42%">القيمة</th></tr>${rows}</table><div class="totals"><div class="total">الحالي: ${fmt(monthTotal)} ج.م</div><div class="total">السابق: ${fmt(prevTotal)} ج.م</div><div class="total">الزيادة: ${fmt(increase)} ج.م</div><div class="total">الربح: ${fmt(netProfit)} ج.م</div></div><div class="footer">منظومة الكابتن (لهندسة الأرقام وريادة الأعمال)</div><div class="dateline">شكراً لتعاملكم معنا — ${new Date().toLocaleDateString('ar-EG')} ${new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}</div></body></html>`;
     doc.open();

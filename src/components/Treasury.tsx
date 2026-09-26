@@ -69,7 +69,7 @@ export default function Treasury({ currentUser }: TreasuryProps) {
     setSubmitting(false);
   };
 
-  const isAdmin = currentUser?.role === "admin";
+  const isAdmin = currentUser?.role === "admin" || currentUser?.role === "developer";
   if (!isAdmin) {
     return (
       <div className="w-full p-6 flex flex-col items-center justify-center text-right select-none font-sans" style={{ direction: "rtl" }}>

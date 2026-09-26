@@ -15,7 +15,8 @@ import {
   Save,
   Download,
   ExternalLink,
-  Keyboard
+  Keyboard,
+  Pencil
 } from "lucide-react";
 import { Supplier, Item, UnitType, User } from "../types";
 import { authFetch } from "../authFetch";
@@ -43,6 +44,8 @@ export default function PurchaseInvoice({ currentUser }: PurchaseInvoiceProps) {
   // Suppliers & Products
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [dbItems, setDbItems] = useState<Item[]>([]);
+  const [savedMarketName, setSavedMarketName] = useState("منظومة الكابتن");
+  const [savedMarketPhone, setSavedMarketPhone] = useState("01099887766");
 
   // Cart
   type PurchaseItemInput = {
@@ -69,6 +72,52 @@ export default function PurchaseInvoice({ currentUser }: PurchaseInvoiceProps) {
   const [error, setError] = useState("");
   const [showInvoiceHistory, setShowInvoiceHistory] = useState(false);
   const [historyInvoices, setHistoryInvoices] = useState<any[]>([]);
+  const [editingInv, setEditingInv] = useState<any>(null);
+  const [editName, setEditName] = useState("");
+  const [editSource, setEditSource] = useState("main_safe");
+  const [editPaid, setEditPaid] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
+
+  const startEditInvoice = (inv: any) => {
+    setEditingInv(inv);
+    setEditName(inv.customer_supplier_name || "");
+    setEditSource(inv.payment_source || "main_safe");
+    setEditPaid(String(inv.paid ?? ""));
+  };
+
+  const saveEditInvoice = async () => {
+    if (!editingInv) return;
+    const paidNum = Number(editPaid);
+    if (isNaN(paidNum) || paidNum < 0) {
+      setError("قيمة المدفوع غير صحيحة.");
+      return;
+    }
+    setEditSaving(true);
+    try {
+      const res = await authFetch(`/api/invoices/${editingInv.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          customer_supplier_name: editName.trim() || editingInv.customer_supplier_name,
+          payment_source: editSource,
+          paid: paidNum,
+          remaining: Math.max(0, Number(editingInv.total || 0) - paidNum),
+          user_name: currentUser?.name || "المدير",
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success !== false) {
+        setEditingInv(null);
+        await loadInvoiceHistory();
+      } else {
+        setError(data.error || "تعذر حفظ التعديل.");
+      }
+    } catch {
+      setError("خطأ في الاتصال بالخادم.");
+    } finally {
+      setEditSaving(false);
+    }
+  };
   const [historyLoading, setHistoryLoading] = useState(false);
 
   const loadInvoiceHistory = async () => {
@@ -111,8 +160,8 @@ export default function PurchaseInvoice({ currentUser }: PurchaseInvoiceProps) {
             total: it.total || 0
           })),
           cashier: invoice.cashier || "الكاشير",
-          marketName: "سوبرماركت المدينة المنورة",
-          marketPhone: ""
+          marketName: savedMarketName,
+          marketPhone: savedMarketPhone
         });
         setShowInvoiceHistory(false);
         setShowPrintModal(true);
@@ -130,11 +179,22 @@ export default function PurchaseInvoice({ currentUser }: PurchaseInvoiceProps) {
       const supResponse = await authFetch("/api/suppliers");
       const supData = await supResponse.json();
       setSuppliers(supData);
-      // No default supplier selected
+      // Auto-select first supplier so item selection works immediately
+      setSupplierName(prev => prev || (supData.length > 0 ? supData[0].name : ""));
 
       const itemResponse = await authFetch("/api/items");
       const itemData = await itemResponse.json();
       setDbItems(itemData);
+
+      // Market identity from disk (server settings), not localStorage
+      try {
+        const setRes = await authFetch("/api/settings");
+        if (setRes.ok) {
+          const s = await setRes.json();
+          if (s.market_name) setSavedMarketName(s.market_name);
+          if (s.market_phone) setSavedMarketPhone(s.market_phone);
+        }
+      } catch {}
     } catch (err) {
       console.error("خطأ أثناء جلب التهيئة للمشتريات", err);
     }
@@ -216,7 +276,11 @@ export default function PurchaseInvoice({ currentUser }: PurchaseInvoiceProps) {
         const response = await authFetch(`/api/items/search?query=${encodeURIComponent(searchCode)}`);
         if (response.ok) {
           const data = await response.json();
-          setSearchResults(data);
+          setSearchResults(
+            supplierName
+              ? data.filter((p: Item) => ((p.supplier_name || "").trim()) === supplierName)
+              : data
+          );
         }
       } catch (err) {
         console.error("خطأ أثناء البحث المتزامن للمشتريات", err);
@@ -225,11 +289,21 @@ export default function PurchaseInvoice({ currentUser }: PurchaseInvoiceProps) {
 
     const timer = setTimeout(searchItems, 200);
     return () => clearTimeout(timer);
-  }, [searchCode]);
+  }, [searchCode, supplierName]);
+
+  const getSupplierMismatchError = (found: Item): string | null => {
+    if (!supplierName) return "الرجاء اختيار المورد أولاً قبل إضافة الأصناف.";
+    const itemSupplier = (found.supplier_name || "").trim();
+    if (itemSupplier === supplierName) return null;
+    return itemSupplier
+      ? `تم رفض "${found.name}" — الصنف مسجل للمورد "${itemSupplier}". لازم تضيفه تبع المورد "${supplierName}" في صفحة الأصناف الأول.`
+      : `تم رفض "${found.name}" — الصنف بدون مورد. حدّد المورد "${supplierName}" تبعه في صفحة الأصناف الأول.`;
+  };
 
   const addExistingProductToInvoice = (found: Item) => {
-    if (!supplierName) {
-      setError("الرجاء اختيار المورد أولاً قبل إضافة الأصناف.");
+    const mismatchError = getSupplierMismatchError(found);
+    if (mismatchError) {
+      setError(mismatchError);
       return;
     }
     setItems(prev => {
@@ -309,6 +383,16 @@ export default function PurchaseInvoice({ currentUser }: PurchaseInvoiceProps) {
   };
 
   const updateRowField = (idx: number, field: keyof PurchaseItemInput, val: any) => {
+    if (field === "barcode") {
+      const matched = dbItems.find(p => p.barcode === val);
+      if (matched) {
+        const mismatchError = getSupplierMismatchError(matched);
+        if (mismatchError) {
+          setError(mismatchError);
+          return;
+        }
+      }
+    }
     setItems(prev => {
       const updated = [...prev];
       const item = { ...updated[idx] };
@@ -430,7 +514,17 @@ if (true) {
     }
     for (const item of items) {
       const found = dbItems.find(p => p.barcode === item.barcode);
-      // No supplier_name check - allow any product in any purchase invoice
+      if (found) {
+        const itemSupplier = (found.supplier_name || "").trim();
+        if (itemSupplier !== supplierName) {
+          setError(
+            itemSupplier
+              ? `الصنف "${item.name}" مسجل للمورد "${itemSupplier}" — لازم تضيفه تبع المورد "${supplierName}" في صفحة الأصناف الأول قبل حفظ الفاتورة.`
+              : `الصنف "${item.name}" بدون مورد — حدّد المورد "${supplierName}" تبعه في صفحة الأصناف الأول قبل حفظ الفاتورة.`
+          );
+          return;
+        }
+      }
     }
 
     const payload = {
@@ -467,9 +561,6 @@ if (true) {
           second: "2-digit",
           hour12: true
         }).format(new Date());
-
-        const savedMarketName = localStorage.getItem("supermarket_market_name") || "سوبرماركت المدينة المنورة";
-        const savedMarketPhone = localStorage.getItem("supermarket_market_phone") || "01099887766";
 
         setPrintData({
           invoice_number: invoiceNumber,
@@ -656,6 +747,7 @@ if (true) {
                 }}
                 className="w-full h-9 bg-[#b8bcb2] border border-[#888888] px-3 text-right text-xs font-bold text-[#000000] focus:outline-none focus:border-[#222222] cursor-pointer"
               >
+                <option value="" disabled>اختر المورد...</option>
                 {suppliers.map((s) => (
                   <option key={s.id} value={s.name}>{s.name}</option>
                 ))}
@@ -705,6 +797,10 @@ if (true) {
                 <div
                   key={prod.id}
                   onClick={() => {
+                    if (!supplierName) {
+                      setError("الرجاء اختيار المورد أولاً قبل إضافة الأصناف.");
+                      return;
+                    }
                     addExistingProductToInvoice(prod);
                     setSearchCode("");
                     setSearchResults([]);
@@ -983,12 +1079,20 @@ if (true) {
                         <td className="py-2 px-3 font-mono">{inv.date}</td>
                         <td className="py-2 px-3 font-mono">{(inv.total || 0).toFixed(2)} ج.م</td>
                         <td className="py-2 px-3">
-                          <button
-                            onClick={() => handleReprintInvoice(inv.id)}
-                            className="bg-[#222222] text-[#c3c6bb] hover:bg-[#000000] px-3 py-1 font-bold text-xs flex items-center gap-1 mx-auto cursor-pointer"
-                          >
-                            <Printer size={12} /> طباعة
-                          </button>
+                          <div className="flex items-center justify-center gap-1">
+                            <button
+                              onClick={() => handleReprintInvoice(inv.id)}
+                              className="bg-[#222222] text-[#c3c6bb] hover:bg-[#000000] px-3 py-1 font-bold text-xs flex items-center gap-1 cursor-pointer"
+                            >
+                              <Printer size={12} /> طباعة
+                            </button>
+                            <button
+                              onClick={() => startEditInvoice(inv)}
+                              className="bg-[#b8bcb2] text-[#000000] hover:bg-[#888888] border border-[#888888] px-3 py-1 font-bold text-xs flex items-center gap-1 cursor-pointer"
+                            >
+                              <Pencil size={12} /> تعديل
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -998,6 +1102,63 @@ if (true) {
                 <div className="p-8 text-center text-[#555555] font-bold">لا توجد فواتير سابقة.</div>
               )}
             </div>
+            {editingInv && (
+              <div className="bg-white border border-[#222222] p-3 space-y-2">
+                <p className="text-xs font-black text-[#000000]">
+                  تعديل الفاتورة: <span className="font-mono">{editingInv.invoice_number}</span>
+                  <span className="text-[#555555]"> (الإجمالي: {(editingInv.total || 0).toFixed(2)} ج.م)</span>
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs font-bold text-[#000000]">
+                  <label className="space-y-1">
+                    <span>المورد</span>
+                    <input
+                      type="text"
+                      value={editName}
+                      onChange={(e) => setEditName(e.target.value)}
+                      className="w-full h-9 bg-[#b8bcb2] border border-[#888888] px-2 text-right focus:outline-none focus:border-[#222222]"
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <span>مصدر الدفع</span>
+                    <select
+                      value={editSource}
+                      onChange={(e) => setEditSource(e.target.value)}
+                      className="w-full h-9 bg-[#b8bcb2] border border-[#888888] px-2 text-right cursor-pointer focus:outline-none focus:border-[#222222]"
+                    >
+                      <option value="main_safe">الخزنة الرئيسية</option>
+                      <option value="cash_register">درج الكاشير</option>
+                    </select>
+                  </label>
+                  <label className="space-y-1">
+                    <span>المدفوع (ج.م)</span>
+                    <input
+                      type="number"
+                      min={0}
+                      value={editPaid}
+                      onChange={(e) => setEditPaid(e.target.value)}
+                      className="w-full h-9 bg-[#b8bcb2] border border-[#888888] px-2 text-right font-mono focus:outline-none focus:border-[#222222]"
+                    />
+                  </label>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={saveEditInvoice}
+                    disabled={editSaving}
+                    className="h-9 px-4 bg-[#222222] hover:bg-[#000000] text-[#c3c6bb] font-bold text-xs cursor-pointer disabled:opacity-50"
+                  >
+                    {editSaving ? "جاري الحفظ..." : "حفظ التعديل"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditingInv(null)}
+                    className="h-9 px-4 bg-[#b8bcb2] hover:bg-[#888888] border border-[#888888] text-[#000000] font-bold text-xs cursor-pointer"
+                  >
+                    إلغاء
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1029,8 +1190,8 @@ if (true) {
                 minWidth: "302px",
                 maxWidth: "302px",
                 boxSizing: "border-box",
-                backgroundColor: "#ffffff",
-                color: "#000000",
+                backgroundColor: "var(--bg-card)",
+                color: "var(--text-primary)",
                 padding: "16px 12px",
                 margin: "0 auto",
                 fontFamily: "Arial, Tahoma, sans-serif",
@@ -1041,8 +1202,8 @@ if (true) {
             >
               {/* Receipt Header */}
               <div style={{ textAlign: "center", marginBottom: "8px" }}>
-                <h4 style={{ fontSize: "15px", fontWeight: "900", margin: "0 0 2px 0", color: "#000000" }}>
-                  {printData.marketName || "سوبرماركت المدينة المنورة"}
+                <h4 style={{ fontSize: "15px", fontWeight: "900", margin: "0 0 2px 0", color: "var(--text-primary)" }}>
+                  {printData.marketName || "المدينة المنورة"}
                 </h4>
                 <div style={{ margin: "6px 0 4px 0", padding: "2px 0", borderTop: "1px solid #000000", borderBottom: "1px solid #000000", fontWeight: "bold", fontSize: "11px" }}>
                   إيصال مشتريات وتوريد
@@ -1070,24 +1231,24 @@ if (true) {
               </div>
 
               {/* Items Table */}
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "10px", marginBottom: "8px" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px", marginBottom: "8px", tableLayout: "fixed" }}>
                 <thead>
                   <tr style={{ borderBottom: "1.5px solid #000000", fontWeight: "900" }}>
                     <th style={{ textAlign: "right", paddingBottom: "4px" }}>الصنف</th>
-                    <th style={{ textAlign: "center", paddingBottom: "4px", width: "40px" }}>ك</th>
-                    <th style={{ textAlign: "left", paddingBottom: "4px", width: "65px" }}>الإجمالي</th>
+                    <th style={{ textAlign: "center", paddingBottom: "4px", width: "38px" }}>ك</th>
+                    <th style={{ textAlign: "left", paddingBottom: "4px", width: "60px" }}>الإجمالي</th>
                   </tr>
                 </thead>
                 <tbody>
                   {printData.items.map((it: any, index: number) => (
                     <tr key={index} style={{ borderBottom: "1px dashed #dddddd" }}>
-                      <td style={{ textAlign: "right", padding: "4px 0", fontWeight: "bold", wordBreak: "break-word" }}>
+                      <td style={{ textAlign: "right", padding: "4px 0", fontWeight: "bold", wordBreak: "break-word", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {it.name}
                       </td>
-                      <td style={{ textAlign: "center", padding: "4px 0", fontFamily: "monospace" }}>
+                      <td style={{ textAlign: "center", padding: "4px 0", fontFamily: "monospace", fontSize: "12px" }}>
                         {it.quantity} {it.unit}
                       </td>
-                      <td style={{ textAlign: "left", padding: "4px 0", fontWeight: "bold", fontFamily: "monospace" }}>
+                      <td style={{ textAlign: "left", padding: "4px 0", fontWeight: "bold", fontFamily: "monospace", fontSize: "12px" }}>
                         {(it.total || 0).toFixed(2)}
                       </td>
                     </tr>
@@ -1096,20 +1257,20 @@ if (true) {
               </table>
 
               {/* Totals Summary */}
-              <div style={{ borderTop: "1.5px solid #000000", paddingTop: "6px", fontSize: "10px", fontWeight: "bold" }}>
-                <div style={{
+              <div style={{ borderTop: "1.5px solid #000000", paddingTop: "6px", fontSize: "12px", fontWeight: "bold", textAlign: "center" }}>
+                <div className="pos-total-bar" style={{
                   display: "flex",
-                  justify: "space-between",
-                  backgroundColor: "#000000",
-                  color: "#ffffff",
-                  padding: "5px 6px",
+                  justifyContent: "space-between",
+                  backgroundColor: "var(--accent)",
+                  color: "var(--on-accent)",
+                  padding: "6px 8px",
                   fontWeight: "900",
-                  fontSize: "12px",
+                  fontSize: "15px",
                   marginTop: "4px",
                   marginBottom: "4px"
                 }}>
                   <span>إجمالي التوريد:</span>
-                  <span style={{ fontFamily: "monospace" }}>{(printData.total || 0).toFixed(2)} ج.م</span>
+                  <span style={{ fontFamily: "monospace", fontSize: "16px" }}>{(printData.total || 0).toFixed(2)} ج.م</span>
                 </div>
 
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", marginTop: "4px" }}>
@@ -1132,9 +1293,11 @@ if (true) {
                 )}
               </div>
 
-              {/* Footer */}
-              <div style={{ textAlign: "center", marginTop: "10px", paddingTop: "6px", borderTop: "1px dashed #000000", fontSize: "9px", fontWeight: "bold", color: "#222222" }}>
-                <p style={{ margin: "0", fontSize: "8px", color: "#666666", fontFamily: "monospace" }}>منظومة الكابتن — لهندسة الأرقام وريادة الأعمال</p>
+              {/* Footer — ثابت: 3 سطور فقط ولا شيء بعدهما */}
+              <div style={{ textAlign: "center", marginTop: "10px", paddingTop: "6px", borderTop: "1px dashed #000000", fontWeight: "900", color: "var(--text-primary)" }}>
+                <p style={{ margin: "0 0 3px 0", fontSize: "10px" }}>شكراً لتسوقكم معنا</p>
+                <p style={{ margin: "0 0 2px 0", fontSize: "10px" }}>منظومة الكابتن (لهندسة الأرقام وريادة الأعمال)</p>
+                <p style={{ margin: 0, fontSize: "11px", fontFamily: "monospace" }}>هاتف: {printData.marketPhone || "01099887766"}</p>
               </div>
             </div>
 

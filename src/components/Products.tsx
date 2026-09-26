@@ -140,10 +140,7 @@ export default function Products({ currentUser }: ProductsProps) {
     setError("");
     setSuccess("");
 
-    if (!supplierId || !supplierName) {
-      setError("الرجاء اختيار المورد أولاً قبل حفظ الصنف.");
-      return;
-    }
+    // المورد اختياري — يسمح بإضافة الصنف بدون مورد (بعد مسح البيانات مثلاً)
     if (!name || !barcode || purchasePrice < 0 || retailPrice < 0 || wholesalePrice < 0 || quantity < 0) {
       setError("الرجاء التحقق من المدخلات وملء جميع الحقول الإلزامية.");
       return;
@@ -162,7 +159,7 @@ export default function Products({ currentUser }: ProductsProps) {
       is_tamween: isTamween,
       category,
       supplier_id: supplierId,
-      supplier_name: supplierName,
+      supplier_name: supplierName || "",
       logCreator: currentUser?.name || "المدير"
     };
 
@@ -772,10 +769,9 @@ export default function Products({ currentUser }: ProductsProps) {
               </div>
 
               <div>
-                <label className="block text-[#000000] mb-1">المورد / الشركة الموزعة</label>
+                <label className="block text-[#000000] mb-1">المورد / الشركة الموزعة (اختياري)</label>
                 <select
                   id="modal-item-supplier"
-                  required
                   value={supplierName}
                   onChange={(e) => {
                     const selectedName = e.target.value;
@@ -785,7 +781,7 @@ export default function Products({ currentUser }: ProductsProps) {
                   }}
                   className="w-full h-9 bg-[#b8bcb2] border border-[#888888] px-2 text-right text-xs font-bold text-[#000000] cursor-pointer focus:outline-none focus:border-[#222222]"
                 >
-                  <option value="" disabled>-- اختر المورد --</option>
+                  <option value="">-- بدون مورد --</option>
                   {suppliers.map((s) => (
                     <option key={s.id} value={s.name}>{s.name} ({s.phone})</option>
                   ))}

@@ -1,0 +1,29 @@
+/* Warm Ivory - عاجي دافئ + كهرماني (مريح للعين) */
+[data-theme="warm-ivory"] {
+  --bg-deep: #F5F1E8;
+  --bg-card: #FFFDF9;
+  --bg-card-hover: #FAF6EE;
+  --bg-input: #EAE4D6;
+  --bg-sidebar: #FBF8F1;
+  --text-primary: #1C1917;
+  --text-secondary: #44403C;
+  --text-muted: #78716C;
+  --accent: #B45309;
+  --accent-hover: #D97706;
+  --accent-glow: rgba(180, 83, 9, 0.18);
+  --accent-subtle: rgba(180, 83, 9, 0.08);
+  --primary: #1D4ED8;
+  --success: #15803D;
+  --warning: #92400E;
+  --danger: #B91C1C;
+  --border: #E3DCCE;
+  --border-strong: #9C9280;
+  --shadow: 0 6px 24px rgba(60, 45, 20, 0.08);
+  --shadow-sm: 0 2px 8px rgba(60, 45, 20, 0.06);
+  --shadow-glow: 0 0 18px rgba(180, 83, 9, 0.16);
+  --radius: 12px;
+  --radius-sm: 8px;
+  --gradient-card: linear-gradient(180deg, #FFFDF9, #FAF6EE);
+  --gradient-accent: linear-gradient(135deg, #B45309, #D97706);
+  --gradient-header: linear-gradient(90deg, #F5F1E8, #FFFDF9);
+}

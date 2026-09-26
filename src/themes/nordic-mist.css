@@ -1,0 +1,29 @@
+/* Nordic Mist - رمادي فاتح ناعم + تركوازي (تباين عالي) */
+[data-theme="nordic-mist"] {
+  --bg-deep: #EEF1F5;
+  --bg-card: #FFFFFF;
+  --bg-card-hover: #F4F7FA;
+  --bg-input: #E3E8EF;
+  --bg-sidebar: #F7F9FC;
+  --text-primary: #12161C;
+  --text-secondary: #414C5A;
+  --text-muted: #6B7887;
+  --accent: #0E7490;
+  --accent-hover: #0891B2;
+  --accent-glow: rgba(14, 116, 144, 0.18);
+  --accent-subtle: rgba(14, 116, 144, 0.08);
+  --primary: #1D4ED8;
+  --success: #15803D;
+  --warning: #B45309;
+  --danger: #B91C1C;
+  --border: #D5DDE6;
+  --border-strong: #8B99AA;
+  --shadow: 0 6px 24px rgba(15, 23, 42, 0.08);
+  --shadow-sm: 0 2px 8px rgba(15, 23, 42, 0.06);
+  --shadow-glow: 0 0 18px rgba(14, 116, 144, 0.16);
+  --radius: 12px;
+  --radius-sm: 8px;
+  --gradient-card: linear-gradient(180deg, #FFFFFF, #F6F8FB);
+  --gradient-accent: linear-gradient(135deg, #0E7490, #0891B2);
+  --gradient-header: linear-gradient(90deg, #EEF1F5, #FFFFFF);
+}

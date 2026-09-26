@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   BarChart3,
   Search,
@@ -30,6 +30,7 @@ interface Partner {
   name: string;
   fixed_profit_percentage: number;
   purchase_percentage: number;
+  fixed_profit_amount?: number;
 }
 
 interface Expense {
@@ -68,6 +69,9 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [data, setData] = useState<any>(null);
+  // بند منظومة التموين (مستقل — فواتير الكارت فقط tamween_discount > 0)
+  const [tamweenReport, setTamweenReport] = useState<any>(null);
+  const [tamweenLoading, setTamweenLoading] = useState(false);
 
   // Partners & Expenses CRUD states
   const [partners, setPartners] = useState<Partner[]>([]);
@@ -75,7 +79,7 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
   
   // Partner Form State
   const [showPartnerModal, setShowPartnerModal] = useState(false);
-  const [partnerForm, setPartnerForm] = useState({ id: 0, name: "", fixed_profit_percentage: 0, purchase_percentage: 0 });
+  const [partnerForm, setPartnerForm] = useState({ id: 0, name: "", fixed_profit_percentage: 0, purchase_percentage: 0, fixed_profit_amount: 0, profit_mode: "percent" });
   const [partnerError, setPartnerError] = useState("");
 
   // Expenses Form State
@@ -86,10 +90,14 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
   // Cashier Commission State
   const [cashierCommPercent, setCashierCommPercent] = useState<number>(0);
   const [cashierPayingPartners, setCashierPayingPartners] = useState<number[]>([]);
+  const commSaveRef = useRef<number | null>(null);
 
   // Charts State
   const [chartViewType, setChartViewType] = useState<"hourly" | "daily">("hourly");
   const [chartDate, setChartDate] = useState<string>("");
+  // Market identity from disk (server settings), not localStorage
+  const [reportMarketName, setReportMarketName] = useState("المدينة المنورة");
+  const logCreatorName = currentUser?.name || "مسؤول المتجر";
 
   useEffect(() => {
     const today = new Date();
@@ -103,6 +111,20 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
     setChartDate(formattedToday);
     
     setExpenseForm(prev => ({ ...prev, date: formattedToday }));
+    authFetch("/api/settings")
+      .then(r => r.ok ? r.json() : null)
+      .then(s => {
+        if (s?.market_name) setReportMarketName(s.market_name);
+        // تحميل عمولة الكاشير المحفوظة تلقائيًا — من غير إدخال يدوي كل مرة
+        if (s?.cashier_commission_percent !== undefined && s.cashier_commission_percent !== "") {
+          const v = parseFloat(s.cashier_commission_percent);
+          if (!isNaN(v) && v >= 0) {
+            setCashierCommPercent(v);
+            commSaveRef.current = v;
+          }
+        }
+      })
+      .catch(() => {});
   }, []);
 
   const fetchReport = async () => {
@@ -137,6 +159,17 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
       fetchReport();
     }
   }, [reportType, startDate, endDate]);
+
+  // جلب بند التموين مع نفس الفترة (منعزل عن باقي الأنشطة)
+  useEffect(() => {
+    if (!startDate || !endDate) return;
+    setTamweenLoading(true);
+    authFetch(`/api/reports/tamween?startDate=${startDate}&endDate=${endDate}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((t) => setTamweenReport(t))
+      .catch(() => setTamweenReport(null))
+      .finally(() => setTamweenLoading(false));
+  }, [startDate, endDate]);
 
   const setPreset = (type: "today" | "month" | "year") => {
     const today = new Date();
@@ -201,7 +234,8 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...partnerForm,
-          logCreator: localStorage.getItem("supermarket_user_name") || "مسؤول المتجر"
+          fixed_profit_amount: partnerForm.profit_mode === "fixed" ? partnerForm.fixed_profit_amount : 0,
+          logCreator: logCreatorName
         })
       });
       if (!response.ok) {
@@ -209,7 +243,7 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
         throw new Error(errData.error || "فشل حفظ بيانات الشريك.");
       }
       setShowPartnerModal(false);
-      setPartnerForm({ id: 0, name: "", fixed_profit_percentage: 0, purchase_percentage: 0 });
+      setPartnerForm({ id: 0, name: "", fixed_profit_percentage: 0, purchase_percentage: 0, fixed_profit_amount: 0, profit_mode: "percent" });
       fetchReport();
     } catch (err: any) {
       setPartnerError(err.message);
@@ -219,7 +253,7 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
   const handleDeletePartner = async (id: number) => {
     if (!window.confirm("هل أنت متأكد من حذف هذا الشريك؟")) return;
     try {
-      const response = await authFetch(`/api/partners/${id}?logCreator=${encodeURIComponent(localStorage.getItem("supermarket_user_name") || "مسؤول المتجر")}`, {
+      const response = await authFetch(`/api/partners/${id}?logCreator=${encodeURIComponent(logCreatorName)}`, {
         method: "DELETE"
       });
       if (!response.ok) throw new Error("فشل حذف الشريك.");
@@ -242,7 +276,7 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...expenseForm,
-          logCreator: localStorage.getItem("supermarket_user_name") || "مسؤول المتجر"
+          logCreator: logCreatorName
         })
       });
       if (!response.ok) throw new Error("فشل تسجيل قيد المصروفات.");
@@ -257,7 +291,7 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
   const handleDeleteExpense = async (id: number) => {
     if (!window.confirm("هل أنت متأكد من حذف هذا المصروف؟")) return;
     try {
-      const response = await authFetch(`/api/expenses/${id}?logCreator=${encodeURIComponent(localStorage.getItem("supermarket_user_name") || "مسؤول المتجر")}`, {
+      const response = await authFetch(`/api/expenses/${id}?logCreator=${encodeURIComponent(logCreatorName)}`, {
         method: "DELETE"
       });
       if (!response.ok) throw new Error("فشل حذف المصروف.");
@@ -267,33 +301,59 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
     }
   };
 
-  const totalSales = data?.invoices?.filter((i: any) => i.type === "sales" && i.status !== "returned").reduce((add: number, i: any) => add + i.total, 0) || 0;
   const totalPurchases = data?.invoices?.filter((i: any) => i.type === "purchases" && i.status !== "returned").reduce((add: number, i: any) => add + i.total, 0) || 0;
-  
-  const totalCostOfSales = data?.invoiceItems?.filter((ii: any) => ii.type === "sales").reduce((add: number, ii: any) => add + (ii.cost_price * ii.quantity), 0) || 0;
-  const totalSalesRevenue = data?.invoiceItems?.filter((ii: any) => ii.type === "sales").reduce((add: number, ii: any) => add + ii.total, 0) || 0;
-  
+
+  // فصل حر/تموين على مستوى الصنف:
+  // الصنف يتحسب تموين لو: is_tamween = 1 AND الفاتورة فيها كارت (tamween_discount > 0)
+  // غير كده = حر
+  const isTamweenCardItem = (ii: any) => (ii.is_tamween === 1 || ii.is_tamween === "1") && (ii.tamween_discount || 0) > 0;
+
+  // مبيعات الحر (كل ما عدا أصناف التموين المباعة بكارت) — المرتجعات مستبعدة
+  const notReturned = (ii: any) => ii.status !== "returned";
+  const freeSalesItems = data?.invoiceItems?.filter((ii: any) => ii.type === "sales" && notReturned(ii) && !isTamweenCardItem(ii)) || [];
+  const tamweenCardItems = data?.invoiceItems?.filter((ii: any) => ii.type === "sales" && notReturned(ii) && isTamweenCardItem(ii)) || [];
+  const freeSalesTotal = freeSalesItems.reduce((add: number, ii: any) => add + ii.total, 0);
+  const cardSalesTotal = tamweenCardItems.reduce((add: number, ii: any) => add + ii.total, 0);
+  const freeSalesCount = new Set(freeSalesItems.map((ii: any) => ii.invoice_id)).size;
+  const cardSalesCount = new Set(tamweenCardItems.map((ii: any) => ii.invoice_id)).size;
+
+  // أرباح الحر فقط (باستثناء أرباح أصناف التموين المباعة بكارت)
+  const freeInvoiceItems = freeSalesItems;
+  const totalCostOfSales = freeInvoiceItems.reduce((add: number, ii: any) => add + (ii.cost_price * ii.quantity), 0) || 0;
+  const totalSalesRevenue = freeInvoiceItems.reduce((add: number, ii: any) => add + ii.total, 0) || 0;
+
   const totalExpensesSum = expenses?.reduce((add, ex) => add + Number(ex.amount), 0) || 0;
-  
+
   const grossProfit = totalSalesRevenue - totalCostOfSales;
   const netProfit = grossProfit - totalExpensesSum;
 
   const cashierCommissionAmount = netProfit > 0 ? (netProfit * cashierCommPercent) / 100 : 0;
   const netProfitAfterCashier = netProfit - cashierCommissionAmount;
 
+  // أساس تحويل الجنيه ↔ النسبة (للعرض التلقائي) = صافي ربح الفترة بعد عمولة الكاشير
+  const splitBase = netProfitAfterCashier > 0 ? netProfitAfterCashier : 0;
+  const pctFromAmount = (amount: number) => (splitBase > 0 && amount > 0 ? `${((amount / splitBase) * 100).toFixed(1)}%` : null);
+  const amountFromPct = (pct: number) => (splitBase > 0 && pct > 0 ? `${((splitBase * pct) / 100).toFixed(2)} ج.م` : null);
+
   const partnersShares = partners.map(partner => {
     const purchaseShare = (totalPurchases * partner.purchase_percentage) / 100;
-    const netProfitShare = netProfitAfterCashier > 0 ? (netProfitAfterCashier * partner.fixed_profit_percentage) / 100 : 0;
-    
+    // حصة ثابتة بالجنيه لو معرّفة (بتتدفع حتى لو صافي الربح سالب — التزام)
+    const isFixed = (partner.fixed_profit_amount || 0) > 0;
+    const netProfitShare = isFixed
+      ? (partner.fixed_profit_amount as number)
+      : (netProfitAfterCashier > 0 ? (netProfitAfterCashier * partner.fixed_profit_percentage) / 100 : 0);
+    // وزن الشريك في تحمّل عمولة الكاشير: مبلغ ثابت لو موجود وإلا النسبة
+    const profitWeight = isFixed ? (partner.fixed_profit_amount as number) : partner.fixed_profit_percentage;
+
     const paysCashier = cashierPayingPartners.includes(partner.id);
     let cashierDeductionShare = 0;
     if (paysCashier && cashierCommissionAmount > 0) {
       const totalPayingWeights = partners
         .filter(p => cashierPayingPartners.includes(p.id))
-        .reduce((sum, p) => sum + p.fixed_profit_percentage, 0);
+        .reduce((sum, p) => sum + ((p.fixed_profit_amount || 0) > 0 ? (p.fixed_profit_amount as number) : p.fixed_profit_percentage), 0);
 
       if (totalPayingWeights > 0) {
-        cashierDeductionShare = (cashierCommissionAmount * partner.fixed_profit_percentage) / totalPayingWeights;
+        cashierDeductionShare = (cashierCommissionAmount * profitWeight) / totalPayingWeights;
       }
     }
 
@@ -313,7 +373,7 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
   const processChartData = () => {
     if (!data || !data.invoices) return [];
     
-    const salesInvoices = data.invoices.filter((inv: any) => inv.type === "sales");
+    const salesInvoices = data.invoices.filter((inv: any) => inv.type === "sales" && inv.status !== "returned");
 
     if (chartViewType === "hourly") {
       const activeSales = salesInvoices.filter((inv: any) => inv.date === chartDate);
@@ -508,9 +568,9 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
               {/* Highlights 12-Column Grid */}
               <div className="grid grid-cols-12 gap-4">
                 <div className="col-span-12 sm:col-span-6 lg:col-span-3 bg-[#c3c6bb] p-4 border border-[#222222] text-right">
-                  <span className="text-xs font-bold text-[#555555]">إجمالي المبيعات</span>
-                  <h4 className="text-xl font-black text-[#000000] mt-1">{((totalSales || 0)).toFixed(2)} ج.م</h4>
-                  <p className="text-xs text-[#555555] font-bold mt-1">الفواتير: {data?.invoices?.filter((i: any) => i.type === "sales").length || 0}</p>
+                  <span className="text-xs font-bold text-[#555555]">إجمالي المبيعات (حر)</span>
+                  <h4 className="text-xl font-black text-[#000000] mt-1">{((freeSalesTotal || 0)).toFixed(2)} ج.م</h4>
+                  <p className="text-xs text-[#555555] font-bold mt-1">الفواتير: {freeSalesCount} | تموين بكارت: {cardSalesCount} ({(cardSalesTotal || 0).toFixed(2)})</p>
                 </div>
 
                 <div className="col-span-12 sm:col-span-6 lg:col-span-3 bg-[#c3c6bb] p-4 border border-[#222222] text-right">
@@ -526,12 +586,47 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
                 </div>
 
                 <div className="col-span-12 sm:col-span-6 lg:col-span-3 bg-[#222222] p-4 border border-[#222222] text-right text-[#c3c6bb]">
-                  <span className="text-xs font-bold text-[#b8bcb2]">صافي الربح الفعلي</span>
+                  <span className="text-xs font-bold text-[#b8bcb2]">صافي ربح الحر الفعلي</span>
                   <h4 className="text-xl font-black text-[#c3c6bb] mt-1">
                     {((netProfit || 0)).toFixed(2)} ج.م
                   </h4>
-                  <p className="text-xs text-[#b8bcb2] font-bold mt-1">عائد الأرباح النهائي</p>
+                  <p className="text-xs text-[#b8bcb2] font-bold mt-1">عائد أرباح البضاعة الحر (أرباح التموين في بند مستقل)</p>
                 </div>
+              </div>
+
+              {/* منظومة التموين — بند مستقل (فواتير الكارت فقط tamween_discount > 0) */}
+              <div className="bg-[#c3c6bb] border border-[#222222] p-4 space-y-4">
+                <div className="border-b border-[#888888] pb-2 text-right flex items-center justify-between">
+                  <h3 className="font-extrabold text-sm text-[#000000]">منظومة التموين — حسابات معزولة (فواتير الكارت فقط)</h3>
+                  {tamweenLoading && <span className="text-[11px] font-bold text-[#555555]">جاري تجميع بند التموين...</span>}
+                </div>
+                {tamweenReport ? (
+                  <div className="grid grid-cols-12 gap-4">
+                    {[
+                      { label: "إجمالي مبيعات التموين", value: `${(tamweenReport.sales || 0).toFixed(2)} ج.م`, sub: `قيمة السلع قبل خصم الدعم (${(tamweenReport.disbursed || 0).toFixed(2)})`, bg: "#16a34a", fg: "#ffffff" },
+                      { label: "إجمالي الاستعاضات", value: `${(tamweenReport.replacements || 0).toFixed(2)} ج.م`, sub: `استعاضات ${tamweenReport.replacementsCount || 0}`, bg: "#e11d48", fg: "#ffffff" },
+                      { label: "إجمالي الدعم المنصرف", value: `${(tamweenReport.disbursed || 0).toFixed(2)} ج.م`, sub: `قيمة كارت مباع من الكاشير في ${tamweenReport.cardsUsed || 0} فاتورة`, bg: "#0e7490", fg: "#ffffff" },
+                      { label: "المتبقي من الاستعاضات", value: `${(tamweenReport.remaining || 0).toFixed(2)} ج.م`, sub: "الرصيد المتبقي", bg: "#d97706", fg: "#ffffff" },
+                      { label: "عدد البطاقات التموينية", value: `${tamweenReport.cardsUsed || 0} بطاقة`, sub: "فواتير فيها كارت تموين", bg: "#2563eb", fg: "#ffffff" },
+                      { label: "إجمالي نقاط الخبز", value: `${(tamweenReport.breadPoints || 0).toFixed(2)} ج.م`, sub: "المصروفة في الفترة", bg: "#92400e", fg: "#ffffff" },
+                      { label: "صافي ربح التموين الفعلي", value: `${(tamweenReport.profit || 0).toFixed(2)} ج.م`, sub: `مكاسب ${(tamweenReport.gains || 0).toFixed(2)} • خسائر ${(tamweenReport.losses || 0).toFixed(2)}`, bg: "#7c3aed", fg: "#ffffff" },
+                    ].map((c) => (
+                      <div
+                        key={c.label}
+                        className="col-span-12 sm:col-span-6 lg:col-span-4 p-4 border text-right cursor-default transition-all duration-200 hover:-translate-y-1"
+                        style={{ backgroundColor: c.bg, borderColor: c.bg, color: c.fg }}
+                        onMouseEnter={(e) => { (e.currentTarget as any).style.boxShadow = `0 0 22px ${c.bg}`; }}
+                        onMouseLeave={(e) => { (e.currentTarget as any).style.boxShadow = "none"; }}
+                      >
+                        <span className="text-xs font-black" style={{ color: c.fg }}>{c.label}</span>
+                        <h4 className="text-xl font-black mt-1" style={{ color: c.fg }}>{c.value}</h4>
+                        <p className="text-[11px] font-bold mt-1 opacity-90" style={{ color: c.fg }}>{c.sub}</p>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="p-6 text-center text-[#555555] font-bold text-xs">لا توجد بيانات تموينية في هذه الفترة</div>
+                )}
               </div>
 
               {/* Partners Calculations Grid */}
@@ -558,7 +653,9 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
                             <tr key={p.id}>
                               <td className="py-2.5 px-3">{p.name}</td>
                               <td className="py-2.5 px-3 text-center">
-                                {(p.netProfitShare || 0).toFixed(2)} ج.م ({p.fixed_profit_percentage}%)
+                                {(p.netProfitShare || 0).toFixed(2)} ج.م {(p.fixed_profit_amount || 0) > 0
+                                  ? `(ثابت)${pctFromAmount(p.fixed_profit_amount || 0) ? ` ≈ ${pctFromAmount(p.fixed_profit_amount || 0)}` : ""}`
+                                  : `(${p.fixed_profit_percentage}%)${amountFromPct(p.fixed_profit_percentage) ? ` ≈ ${amountFromPct(p.fixed_profit_percentage)}` : ""}`}
                               </td>
                               <td className="py-2.5 px-3 text-center">
                                 {(p.purchaseShare || 0).toFixed(2)} ج.م ({p.purchase_percentage}%)
@@ -582,10 +679,18 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
                           max="100"
                           value={cashierCommPercent}
                           onChange={(e) => setCashierCommPercent(Math.max(0, parseFloat(e.target.value) || 0))}
-                          className="w-full h-9 bg-[#b8bcb2] border border-[#888888] px-3 text-right text-xs font-bold text-[#000000] focus:outline-none focus:border-[#222222]"
-                        />
-                        <p className="text-xs text-[#555555] font-bold mt-1">المبلغ المحتسب: {(cashierCommissionAmount || 0).toFixed(2)} ج.م</p>
-                      </div>
+                          onBlur={() => {
+                            if (commSaveRef.current !== cashierCommPercent) {
+                              authFetch("/api/settings", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ settings: { cashier_commission_percent: String(cashierCommPercent) }, user_name: logCreatorName })
+                              }).then(() => { commSaveRef.current = cashierCommPercent; }).catch(() => {});
+                            }
+                          }}
+                    className="w-full h-9 bg-[#b8bcb2] border border-[#888888] px-3 text-right text-xs font-bold text-[#000000] focus:outline-none focus:border-[#222222]"
+                  />
+                </div>
 
                       {cashierCommissionAmount > 0 && (
                         <div className="space-y-1">
@@ -606,7 +711,9 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
                                       }
                                     }}
                                   />
-                                  <span>{p.name} ({p.fixed_profit_percentage}%)</span>
+                                  <span>{p.name} {(p.fixed_profit_amount || 0) > 0
+                                    ? `${p.fixed_profit_amount} ج.م${pctFromAmount(p.fixed_profit_amount || 0) ? ` ≈ ${pctFromAmount(p.fixed_profit_amount || 0)}` : ""}`
+                                    : `(${p.fixed_profit_percentage}%)${amountFromPct(p.fixed_profit_percentage) ? ` ≈ ${amountFromPct(p.fixed_profit_percentage)}` : ""}`}</span>
                                 </label>
                               );
                             })}
@@ -693,7 +800,7 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
                 <button
                   id="btn-add-partner-modal"
                   onClick={() => {
-                    setPartnerForm({ id: 0, name: "", fixed_profit_percentage: 0, purchase_percentage: 0 });
+                    setPartnerForm({ id: 0, name: "", fixed_profit_percentage: 0, purchase_percentage: 0, fixed_profit_amount: 0, profit_mode: "percent" });
                     setPartnerError("");
                     setShowPartnerModal(true);
                   }}
@@ -717,7 +824,11 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
                           <div className="flex gap-x-4 gap-y-2 no-print">
                             <button
                               onClick={() => {
-                                setPartnerForm({ ...p });
+                                setPartnerForm({
+                                  ...p,
+                                  fixed_profit_amount: p.fixed_profit_amount || 0,
+                                  profit_mode: (p.fixed_profit_amount || 0) > 0 ? "fixed" : "percent"
+                                });
                                 setPartnerError("");
                                 setShowPartnerModal(true);
                               }}
@@ -736,7 +847,9 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
 
                         <h4 className="font-extrabold text-sm text-[#000000]">{p.name}</h4>
                         <div className="flex gap-x-4 gap-y-2 text-xs font-bold text-[#555555]">
-                          <span>الربح: {p.fixed_profit_percentage}%</span>
+                          <span>الربح: {(p.fixed_profit_amount || 0) > 0
+                            ? `${p.fixed_profit_amount} ج.م (ثابت)${pctFromAmount(p.fixed_profit_amount || 0) ? ` ≈ ${pctFromAmount(p.fixed_profit_amount || 0)}` : ""}`
+                            : `${p.fixed_profit_percentage}%${amountFromPct(p.fixed_profit_percentage) ? ` ≈ ${amountFromPct(p.fixed_profit_percentage)}` : ""}`}</span>
                           <span>المشتريات: {p.purchase_percentage}%</span>
                         </div>
                       </div>
@@ -915,11 +1028,11 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
                       <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#000000', fontWeight: 'bold' }} dy={5} />
                       <YAxis allowDecimals={false} axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#000000', fontWeight: 'bold' }} dx={-5} />
                       <RechartsTooltip 
-                        contentStyle={{ backgroundColor: '#c3c6bb', border: '1px solid #222222', borderRadius: '0px', fontSize: '11px', fontWeight: 'bold', color: '#000000' }} 
-                        itemStyle={{ color: '#000000' }}
+                        contentStyle={{ backgroundColor: 'var(--bg-card)', border: '1px solid var(--border-strong)', borderRadius: '0px', fontSize: '11px', fontWeight: 'bold', color: 'var(--text-primary)' }} 
+                        itemStyle={{ color: 'var(--text-primary)' }}
                         formatter={(value: number) => [`${value.toFixed(2)} ج.م`, "المبيعات"]}
                       />
-                      <Bar dataKey="المبيعات" fill="#222222" maxBarSize={40} />
+                      <Bar dataKey="المبيعات" fill="#1971C2" maxBarSize={40} />
                     </BarChart>
                   </ResponsiveContainer>
                 ) : (
@@ -967,19 +1080,60 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
                 />
               </div>
 
+              <div>
+                <label className="block text-[#000000] mb-1">طريقة توزيع الأرباح</label>
+                <div className="flex gap-1 mb-2">
+                  <button
+                    type="button"
+                    onClick={() => setPartnerForm({ ...partnerForm, profit_mode: "percent", fixed_profit_amount: 0 })}
+                    className={`flex-1 h-8 border text-xs font-bold cursor-pointer transition-colors ${partnerForm.profit_mode !== "fixed" ? "bg-[#222222] text-[#c3c6bb] border-[#222222]" : "bg-[#b8bcb2] text-[#000000] border-[#888888] hover:bg-[#c3c6bb]"}`}
+                  >
+                    ٪ نسبة
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPartnerForm({ ...partnerForm, profit_mode: "fixed" })}
+                    className={`flex-1 h-8 border text-xs font-bold cursor-pointer transition-colors ${partnerForm.profit_mode === "fixed" ? "bg-[#222222] text-[#c3c6bb] border-[#222222]" : "bg-[#b8bcb2] text-[#000000] border-[#888888] hover:bg-[#c3c6bb]"}`}
+                  >
+                    ج.م مبلغ ثابت
+                  </button>
+                </div>
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2">
                 <div>
-                  <label className="block text-[#000000] mb-1">نسبة الربح %</label>
+                  <label className="block text-[#000000] mb-1">
+                    {partnerForm.profit_mode === "fixed" ? "حصة الربح (ج.م)" : "نسبة الربح %"}
+                  </label>
                   <input
                     type="number"
                     required
                     min="0"
-                    max="100"
                     step="0.1"
-                    value={partnerForm.fixed_profit_percentage || ""}
-                    onChange={(e) => setPartnerForm({ ...partnerForm, fixed_profit_percentage: parseFloat(e.target.value) || 0 })}
+                    value={partnerForm.profit_mode === "fixed" ? (partnerForm.fixed_profit_amount || "") : (partnerForm.fixed_profit_percentage || "")}
+                    onChange={(e) => {
+                      const v = parseFloat(e.target.value) || 0;
+                      if (partnerForm.profit_mode === "fixed") {
+                        setPartnerForm({ ...partnerForm, fixed_profit_amount: v });
+                      } else {
+                        setPartnerForm({ ...partnerForm, fixed_profit_percentage: v });
+                      }
+                    }}
                     className="w-full h-9 bg-[#b8bcb2] border border-[#888888] px-3 text-right text-xs font-bold text-[#000000] focus:outline-none focus:border-[#222222]"
                   />
+                  <p className="text-[10px] font-bold text-[#555555] mt-1 leading-relaxed">
+                    {partnerForm.profit_mode === "fixed"
+                      ? (partnerForm.fixed_profit_amount || 0) > 0
+                        ? pctFromAmount(partnerForm.fixed_profit_amount || 0)
+                          ? `تلقائي: ≈ ${pctFromAmount(partnerForm.fixed_profit_amount || 0)} من صافي ربح الفترة (${splitBase.toFixed(2)} ج.م)`
+                          : "مفيش أرباح موجبة في الفترة — النسبة مش هتتحسب"
+                        : "اكتب الحصة بالجنيه والنسبة هتتحسب لوحدها من الأرباح"
+                      : (partnerForm.fixed_profit_percentage || 0) > 0
+                        ? amountFromPct(partnerForm.fixed_profit_percentage || 0)
+                          ? `تلقائي: ≈ ${amountFromPct(partnerForm.fixed_profit_percentage || 0)} من صافي ربح الفترة (${splitBase.toFixed(2)} ج.م)`
+                          : "مفيش أرباح موجبة في الفترة — المبلغ مش هيتحسب"
+                        : "اكتب النسبة والمبلغ المقابل هيتحسب لوحدها من الأرباح"}
+                  </p>
                 </div>
                 <div>
                   <label className="block text-[#000000] mb-1">نسبة المشتريات %</label>
@@ -993,6 +1147,13 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
                     onChange={(e) => setPartnerForm({ ...partnerForm, purchase_percentage: parseFloat(e.target.value) || 0 })}
                     className="w-full h-9 bg-[#b8bcb2] border border-[#888888] px-3 text-right text-xs font-bold text-[#000000] focus:outline-none focus:border-[#222222]"
                   />
+                  <p className="text-[10px] font-bold text-[#555555] mt-1 leading-relaxed">
+                    {(partnerForm.purchase_percentage || 0) > 0
+                      ? totalPurchases > 0
+                        ? `تلقائي: = ${((totalPurchases * (partnerForm.purchase_percentage || 0)) / 100).toFixed(2)} ج.م من إجمالي مشتريات الفترة (${totalPurchases.toFixed(2)} ج.م)`
+                        : "مفيش مشتريات في الفترة — المبلغ مش هيتحسب"
+                      : "اكتب النسبة والمبلغ المقابل هيتحسب من المشتريات"}
+                  </p>
                 </div>
               </div>
 
@@ -1125,16 +1286,17 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
             style={{ direction: "rtl", width: "80mm", minWidth: "80mm", maxWidth: "80mm" }}
           >
             <div className="text-center space-y-0.5 border-b border-black pb-2 text-xs">
-              <h4 className="font-bold">{localStorage.getItem("supermarket_market_name") || "سوبرماركت المدينة المنورة"}</h4>
+              <h4 className="font-bold">{reportMarketName}</h4>
               <p className="text-[10px] text-gray-600">تقرير مالي وإحصائي</p>
               <p className="text-[10px] text-black font-semibold">من {startDate} إلى {endDate}</p>
             </div>
 
             <div className="space-y-1 text-xs border-b border-black pb-2 font-bold">
-              <div className="flex justify-between"><span>المبيعات:</span> <span>{(totalSales || 0).toFixed(2)} ج.م</span></div>
+              <div className="flex justify-between"><span>مبيعات (حر):</span> <span>{(freeSalesTotal || 0).toFixed(2)} ج.م</span></div>
+              <div className="flex justify-between"><span>مبيعات (كارت تموين):</span> <span>{(cardSalesTotal || 0).toFixed(2)} ج.م</span></div>
               <div className="flex justify-between"><span>المشتريات:</span> <span>{(totalPurchases || 0).toFixed(2)} ج.م</span></div>
               <div className="flex justify-between"><span>المصروفات:</span> <span>-{(totalExpensesSum || 0).toFixed(2)} ج.م</span></div>
-              <div className="flex justify-between font-black text-sm border-t border-black pt-1"><span>صافي الربح:</span> <span>{(netProfit || 0).toFixed(2)} ج.م</span></div>
+              <div className="flex justify-between font-black text-sm border-t border-black pt-1"><span>صافي ربح الحر:</span> <span>{(netProfit || 0).toFixed(2)} ج.م</span></div>
             </div>
           </div>
         </div>

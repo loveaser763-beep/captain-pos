@@ -158,7 +158,7 @@ export default function DeveloperPanel({ currentUser }: DeveloperPanelProps) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `innocode_database_backup_${new Date().toISOString().split("T")[0]}.json`;
+      a.download = `Elkapten_database_backup_${new Date().toISOString().split("T")[0]}.json`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
@@ -216,7 +216,7 @@ export default function DeveloperPanel({ currentUser }: DeveloperPanelProps) {
           <div>
             <h1 className="text-base font-black text-[#000000]">لوحة تحكم منظومة الكابتن</h1>
             <p className="text-xs text-[#555555] font-semibold mt-0.5">
-              مرحباً بك المبرمج <strong className="text-[#000000]">innocode</strong> - صلاحيات الوصول الكاملة والجذرية لقواعد البيانات والمحرك
+              مرحباً بك المبرمج <strong className="text-[#000000]">Elkapten</strong> - صلاحيات الوصول الكاملة والجذرية لقواعد البيانات والمحرك
             </p>
           </div>
         </div>
@@ -347,7 +347,7 @@ export default function DeveloperPanel({ currentUser }: DeveloperPanelProps) {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2 text-xs font-medium text-[#333333]">
               <div className="bg-[#b8bcb2] p-2.5 border border-[#888888]">
                 <span>اسم المستخدم المبرمج: </span>
-                <strong className="text-[#000000]">innocode</strong>
+                <strong className="text-[#000000]">Elkapten</strong>
               </div>
               <div className="bg-[#b8bcb2] p-2.5 border border-[#888888]">
                 <span>المحرك وقاعدة البيانات: </span>
@@ -634,10 +634,10 @@ export default function DeveloperPanel({ currentUser }: DeveloperPanelProps) {
               </thead>
               <tbody>
                 {usersList.map((u) => (
-                  <tr key={u.id} className={`border-b border-[#888888] ${u.username === "innocode" ? "bg-[#a8b898] font-bold" : "hover:bg-[#b8bcb2]"}`}>
+                  <tr key={u.id} className={`border-b border-[#888888] ${u.role === "developer" ? "bg-[#a8b898] font-bold" : "hover:bg-[#b8bcb2]"}`}>
                     <td className="p-2.5 border border-[#888888] font-mono">{u.id}</td>
                     <td className="p-2.5 border border-[#888888] font-bold text-[#000000]">
-                      {u.username} {u.username === "innocode" && <span className="mr-1 text-[10px] bg-[#222222] text-[#c3c6bb] px-1.5 py-0.5">(المبرمج)</span>}
+                      {u.username} {u.role === "developer" && <span className="mr-1 text-[10px] bg-[#222222] text-[#c3c6bb] px-1.5 py-0.5">(المبرمج)</span>}
                     </td>
                     <td className="p-2.5 border border-[#888888]">{u.name}</td>
                     <td className="p-2.5 border border-[#888888] font-bold">{u.role}</td>

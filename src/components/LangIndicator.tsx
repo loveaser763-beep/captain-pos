@@ -43,15 +43,15 @@ export default function LangIndicator({ compact = false }: { compact?: boolean }
     return (
       <div
         title={isAR ? "الكيبورد عربي - اضغط Alt+Shift للتبديل للإنجليزي" : "الكيبورد إنجليزي - اضغط Alt+Shift للتبديل للعربي"}
-        className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-black tracking-widest border select-none ${
+        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-black tracking-widest border select-none bg-[var(--bg-input)] ${
           isAR
-            ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
-            : "bg-sky-500/15 text-sky-300 border-sky-500/30"
+            ? "text-[var(--success)] border-[var(--border)]"
+            : "text-[var(--accent)] border-[var(--border)]"
         }`}
       >
         <Keyboard size={11} strokeWidth={2} className="shrink-0 opacity-80" />
         <span>{isAR ? "عربي" : "EN"}</span>
-        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isAR ? "bg-emerald-400" : "bg-sky-400"}`} />
+        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isAR ? "bg-[var(--success)]" : "bg-[var(--accent)]"}`} />
       </div>
     );
   }
@@ -59,15 +59,15 @@ export default function LangIndicator({ compact = false }: { compact?: boolean }
   return (
     <div
       title={isAR ? "الكيبورد عربي - اضغط Alt+Shift للتبديل للإنجليزي" : "الكيبورد إنجليزي - اضغط Alt+Shift للتبديل للعربي"}
-      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-black tracking-widest border cursor-help select-none transition-colors ${
+      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-black tracking-widest border cursor-help select-none transition-colors bg-[var(--bg-input)] ${
         isAR
-          ? "bg-emerald-500/15 text-emerald-200 border-emerald-500/25"
-          : "bg-sky-500/15 text-sky-200 border-sky-500/25"
+          ? "text-[var(--success)] border-[var(--border)]"
+          : "text-[var(--accent)] border-[var(--border)]"
       }`}
     >
       <Keyboard size={12} strokeWidth={2} className="shrink-0 opacity-70" />
       <span>{isAR ? "ع" : "EN"}</span>
-      <span className={`w-2 h-2 rounded-full shrink-0 ${isAR ? "bg-emerald-400" : "bg-sky-400 animate-pulse"}`} />
+      <span className={`w-2 h-2 rounded-full shrink-0 ${isAR ? "bg-[var(--success)]" : "bg-[var(--accent)]"}`} />
     </div>
   );
 }

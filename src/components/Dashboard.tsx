@@ -41,6 +41,8 @@ export default function Dashboard({ onNavigateToTab, currentUser }: DashboardPro
 
   const [deleteId, setDeleteId] = useState<number | null>(null);
   const [deleteInvoiceNumber, setDeleteInvoiceNumber] = useState("");
+  const [tamweenMonth, setTamweenMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [tamweenLoading, setTamweenLoading] = useState(false);
 
   const [returnInvoice, setReturnInvoice] = useState<Invoice | null>(null);
   const [returnInvoiceDetails, setReturnInvoiceDetails] = useState<{ invoice: any; items: any[] } | null>(null);
@@ -71,18 +73,68 @@ export default function Dashboard({ onNavigateToTab, currentUser }: DashboardPro
     }
   }, [returnInvoice]);
 
-  const fetchStats = async () => {
+  const fetchStats = async (monthOverride?: string) => {
     setLoading(true);
     setError("");
     try {
-      const response = await authFetch("/api/dashboard/stats");
+      const m = monthOverride || tamweenMonth;
+      const response = await authFetch(`/api/dashboard/stats?month=${encodeURIComponent(m)}`);
       if (!response.ok) throw new Error("فشل اتصال لوحة التحكم بالنظام المحاسبي.");
       const data = await response.json();
       setStats(data);
+      if (data?.tamween?.month) setTamweenMonth(data.tamween.month);
     } catch (err: any) {
       setError(err.message || "فشلت عملية جلب معلومات الشاشة الرئيسية.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchTamweenMonth = async (m: string) => {
+    setTamweenLoading(true);
+    try {
+      const res = await authFetch(`/api/tamween/month-summary?month=${encodeURIComponent(m)}`);
+      if (res.ok) {
+        const t = await res.json();
+        setStats((prev: any) => prev ? ({
+          ...prev,
+          tamween: {
+            month: t.month,
+            opening: t.opening,
+            discount: t.disbursed,
+            cardsUsed: t.cardsUsed,
+            replacements: t.replacements,
+            breadPoints: t.breadPoints,
+            available: t.available,
+            remaining: t.remaining,
+            netOwed: t.remaining
+          }
+        }) : prev);
+      }
+    } catch {} finally {
+      setTamweenLoading(false);
+    }
+  };
+
+  const handleEditOpening = async () => {
+    const current = (stats as any)?.tamween?.opening || 0;
+    const input = prompt("رصيد أول المدة المرحّل لهذا الشهر (ج.م):", String(current));
+    if (input === null) return;
+    const val = Number(input);
+    if (isNaN(val)) { alert("الرصيد غير صحيح"); return; }
+    try {
+      const res = await authFetch("/api/tamween/month-opening", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ month: tamweenMonth, opening_balance: val })
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error((e as any).error || "فشل حفظ الرصيد");
+      }
+      fetchTamweenMonth(tamweenMonth);
+    } catch (err: any) {
+      alert(err.message || "فشل حفظ الرصيد");
     }
   };
 
@@ -352,22 +404,52 @@ export default function Dashboard({ onNavigateToTab, currentUser }: DashboardPro
             </div>
 
             {/* KPI Card 5 - tamween */}
-            <div className="col-span-12 min-[420px]:col-span-6 lg:col-span-3 lux-glass p-0 border-0 flex flex-col justify-between overflow-hidden" id="kpi-tamween" style={{borderTop: '3px solid #f59e0b'}}>
-              <div className="p-[1px] rounded-[16px] h-full" style={{background: '#f59e0b'}}>
+            <div className="col-span-12 min-[420px]:col-span-6 lg:col-span-3 lux-glass p-0 border-0 flex flex-col justify-between overflow-hidden" id="kpi-tamween" style={{borderTop: '3px solid var(--warning)'}}>
+              <div className="p-[1px] rounded-[16px] h-full" style={{background: 'var(--warning)'}}>
                 <div className="bg-[var(--bg-card)] rounded-[15px] p-4 h-full flex flex-col justify-between">
                   <div className="flex justify-between items-center pb-2 border-b border-[var(--border)]">
-                    <span className="text-xs font-black flex items-center gap-1.5" style={{color: '#f59e0b'}}><span className="w-2 h-2 rounded-full" style={{background: '#f59e0b'}}></span>المنظومة التموينية</span>
+                    <span className="text-xs font-black flex items-center gap-1.5" style={{color: 'var(--warning)'}}><span className="w-2 h-2 rounded-full" style={{background: 'var(--warning)'}}></span>المنظومة التموينية</span>
                     <span className="text-xs font-mono font-bold text-[var(--text-muted)]">٠٥</span>
                   </div>
+                  <div className="flex items-center gap-2 mt-2">
+                    <input
+                      type="month"
+                      value={tamweenMonth}
+                      onChange={(e) => {
+                        const m = e.target.value;
+                        if (/^\d{4}-\d{2}$/.test(m)) {
+                          setTamweenMonth(m);
+                          fetchTamweenMonth(m);
+                        }
+                      }}
+                      className="h-7 px-2 text-[11px] font-bold border border-[var(--border)] bg-transparent text-[var(--text-secondary)]"
+                      title="اختيار الشهر"
+                    />
+                    <button onClick={handleEditOpening} className="h-7 px-2 text-[10px] font-bold border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--border)] cursor-pointer" title="تعديل رصيد أول المدة المرحّل">
+                      تعديل الرصيد
+                    </button>
+                    {tamweenLoading && <span className="text-[10px] text-[var(--text-muted)]">جاري التحميل...</span>}
+                  </div>
                   <div className="text-right mt-3 space-y-1">
-                    <h3 className="text-xl font-black" style={{color: '#f59e0b'}}>
-                      {(stats.tamween?.discount || 0).toFixed(2)} <span className="text-xs font-bold text-[var(--text-secondary)]">ج.م</span>
+                    <h3 className="text-xl font-black" style={{color: 'var(--warning)'}}>
+                      {((stats as any).tamween?.discount || 0).toFixed(2)} <span className="text-xs font-bold text-[var(--text-secondary)]">ج.م</span>
                     </h3>
-                    <span className="text-xs text-[var(--text-secondary)] font-semibold block">{stats.tamween?.cardsUsed || 0} بطاقة مصروفة</span>
-                    <span className="text-xs text-[var(--text-secondary)] font-semibold block">استعاضات: {(stats.tamween?.replacements || 0).toFixed(2)} ج.م</span>
-                    <span className="text-xs font-bold block" style={{color: (stats.tamween?.netOwed || 0) > 0 ? '#ef4444' : '#22c55e'}}>
-                      صافي:{(stats.tamween?.netOwed || 0) > 0 ? ' لسه مدينهولك' : ' الشركة مديالك'} {Math.abs(stats.tamween?.netOwed || 0).toFixed(2)} ج.م
-                    </span>
+                    <span className="text-xs text-[var(--text-secondary)] font-semibold block">اجمالي الدعم المنصرف خلال الشهر (قيمة كارت مبيع من الكاشير)</span>
+                    <span className="text-xs text-[var(--text-secondary)] font-semibold block">{(stats as any).tamween?.cardsUsed || 0} بطاقة مصروفة</span>
+                    <span className="text-xs text-[var(--text-secondary)] font-semibold block">اجمالي مبلغ الاستعاضات: {((stats as any).tamween?.replacements || 0).toFixed(2)} ج.م</span>
+                    {((stats as any).tamween?.opening || 0) !== 0 && (
+                      <span className="text-[11px] text-[var(--text-muted)] font-semibold block">رصيد مرحّل من الشهر السابق: {((stats as any).tamween?.opening || 0).toFixed(2)} ج.م</span>
+                    )}
+                    {(() => {
+                      const rem = Number((stats as any).tamween?.remaining ?? (stats as any).tamween?.netOwed ?? 0);
+                      const isDebt = rem < 0;
+                      return (
+                        <span className="text-xs font-bold block" style={{color: isDebt ? '#ef4444' : '#22c55e'}}>
+                          {isDebt ? `مديونية على الاستعاضات: ${rem.toFixed(2)} ج.م` : `المتبقي من الاستعاضات: ${rem.toFixed(2)} ج.م`}
+                        </span>
+                      );
+                    })()}
+                    <span className="text-[11px] text-[var(--text-muted)] font-semibold block">نقاط الخبز المصروفة: {((stats as any).tamween?.breadPoints || 0).toFixed(2)} ج.م</span>
                   </div>
                 </div>
               </div>
@@ -416,7 +498,7 @@ export default function Dashboard({ onNavigateToTab, currentUser }: DashboardPro
                         return null;
                       }}
                     />
-                    <Bar dataKey="sales" name="المبيعات" fill="#222222" maxBarSize={32} />
+                    <Bar dataKey="sales" name="المبيعات" fill="#1971C2" maxBarSize={32} />
                     <Bar dataKey="purchases" name="المشتريات" fill="#666666" maxBarSize={32} />
                   </BarChart>
                 </ResponsiveContainer>
