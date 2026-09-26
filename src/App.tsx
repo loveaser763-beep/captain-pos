@@ -19,6 +19,7 @@ import { Menu, PanelLeftClose, PanelLeftOpen, Minus, Square, X } from "lucide-re
 import UnifiedPrintButton from "./components/UnifiedPrintButton";
 import { applyTheme, getSavedTheme } from "./components/ThemeSwitcher";
 import { isLoggedIn, authFetch, clearAuthToken, getAuthToken, hardRefocus } from "./authFetch";
+import LicenseScreen from "./components/LicenseScreen";
 
 import InvoicesRegister from "./components/InvoicesRegister";
 import LangIndicator from "./components/LangIndicator";
@@ -37,6 +38,17 @@ export default function App() {
   const sidebarTimerRef = useRef<any>(null);
   const topBarRef = useRef<HTMLDivElement | null>(null);
   const [topBarH, setTopBarH] = useState(68);
+
+  // حالة الترخيص — لو غير مفعّل: شاشة التفعيل بدل أي شيء آخر (بلا نت)
+  const [licenseActive, setLicenseActive] = useState<boolean | null>(null);
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/license/status")
+      .then((r) => r.json())
+      .then((d) => { if (alive) setLicenseActive(!!d?.active); })
+      .catch(() => { if (alive) setLicenseActive(false); });
+    return () => { alive = false; };
+  }, []);
   useEffect(() => {
     const el = topBarRef.current;
     if (!el) return;
@@ -208,6 +220,10 @@ export default function App() {
         return <Dashboard currentUser={currentUser} onNavigateToTab={(tab) => setActiveTab(tab)} />;
     }
   };
+
+  // الترخيص قبل أي شيء: غير مفعّل → شاشة التفعيل فقط
+  if (licenseActive === null) return null;
+  if (!licenseActive) return <LicenseScreen onActivated={() => setLicenseActive(true)} />;
 
   // If session is unauthenticated, load login UI screen
   if (!currentUser) {

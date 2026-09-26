@@ -12,7 +12,8 @@
     "electron": "electron .",
     "electron:dev": "npm run dev & sleep 2 && electron .",
     "prebuild": "node prebuild.js",
-    "build": "npm run prebuild && vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
+    "build": "npm run prebuild && vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --minify --outfile=dist/server.cjs",
+    "build:debug": "npm run prebuild && vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "build:watch": "vite build --watch",
     "server:watch": "esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs --watch",
     "auto": "concurrently \"npm:build:watch\" \"npm:server:watch\"",
@@ -33,6 +34,7 @@
     "files": [
       "electron/**/*",
       "dist/**/*",
+      "!dist/**/*.map",
       "public/**/*",
       "server.cjs"
     ],

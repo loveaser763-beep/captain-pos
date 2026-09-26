@@ -9,6 +9,8 @@ database.sqlite-wal
 *.log
 .env
 .captain-jwt-secret
+.captain-license
+*.private.pem
 public/zesty-data/
 public/jameety-data/
 src/components/jameety/data/

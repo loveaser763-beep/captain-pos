@@ -8,6 +8,7 @@ import crypto from "crypto";
 import { execFile } from "child_process";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import { licenseStatus, activateLicense } from "./license-core";
 // ملحوظة: vite تُستورد ديناميكياً داخل وضع التطوير فقط — نسخة التشغيل المجمّعة لا تعتمد عليها.
 
 const _currentDir = typeof __dirname !== 'undefined' ? __dirname : path.dirname(process.argv[1] || '.');
@@ -47,6 +48,40 @@ async function startServer() {
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
+  // مجلد البيانات: في نسخة التشغيل المجمّعة يأتي من CAPTAIN_DATA_DIR (مجلد كتابة مضمون)،
+  // وفي وضع التطوير يبقى مجلد العمل الحالي.
+  const DATA_DIR = process.env.CAPTAIN_DATA_DIR || process.cwd();
+
+  // ============================================================
+  // بوابة الترخيص — تفعيل بلا نت مربوط ببصمة الجهاز
+  // تسبق بوابة المصادقة: من غير تفعيل لا يُفتح أي مسار إطلاقًا
+  // ============================================================
+  app.get("/api/license/status", (_req, res) => {
+    try { res.json(licenseStatus(DATA_DIR)); }
+    catch (e: any) { res.status(500).json({ active: false, code: "", reason: String(e?.message || e) }); }
+  });
+
+  app.post("/api/license/activate", (req, res) => {
+    try {
+      const out = activateLicense(DATA_DIR, String(req.body?.key || ""));
+      if (!out.ok) return res.status(400).json({ success: false, error: out.error, ...out.status });
+      res.json({ success: true, ...out.status });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: String(e?.message || e) });
+    }
+  });
+
+  app.use("/api", (req, res, next) => {
+    const url = (req.originalUrl || "").split("?")[0];
+    if (url === "/api/license/status" || url === "/api/license/activate") return next();
+    let active = false;
+    try { active = licenseStatus(DATA_DIR).active; } catch { active = false; }
+    if (!active) {
+      return res.status(402).json({ error: "البرنامج غير مفعّل على هذا الجهاز", licenseRequired: true });
+    }
+    return next();
+  });
+
   // Auth Middleware — التحقق من JWT Token
   const requireAuth = (req: any, res: any, next: any) => {
     const authHeader = req.headers.authorization;
@@ -75,7 +110,11 @@ async function startServer() {
   // بوابة الأمان العامة — كل /api محمي ما لم يُستثنى صراحةً
   // (كان فيه 111 مسار، منهم 11 بس عليهم requireAuth يدوي — والباقي كله مفتوح)
   // ============================================
-  const PUBLIC_API = new Set(["POST /api/auth/login"]);
+  const PUBLIC_API = new Set([
+    "POST /api/auth/login",
+    "GET /api/license/status",
+    "POST /api/license/activate",
+  ]);
   app.use("/api", (req, res, next) => {
     const url = (req.originalUrl || "").split("?")[0];
     if (PUBLIC_API.has(`${req.method} ${url}`)) return next();
@@ -100,10 +139,6 @@ async function startServer() {
     else rec.count++;
   };
   const loginSucceeded = (key: string): void => { loginAttempts.delete(key); };
-
-  // مجلد البيانات: في نسخة التشغيل المجمّعة يأتي من CAPTAIN_DATA_DIR (مجلد كتابة مضمون)،
-  // وفي وضع التطوير يبقى مجلد العمل الحالي.
-  const DATA_DIR = process.env.CAPTAIN_DATA_DIR || process.cwd();
 
   // Initialize SQLite Database
   const dbPath = path.join(DATA_DIR, "database.sqlite");
@@ -1879,6 +1914,34 @@ async function startServer() {
   });
 
   // ==================== DEVELOPER CONTROL PANEL APIS ====================
+
+  // API - توليد مفتاح تفعيل لجهاز عميل (بلا نت)
+  // يقرأ المفتاح الخاص من مسار خارج المشروع — فلا يعمل على حزمة العميل إطلاقًا
+  app.post("/api/developer/license/generate", requireAuth, requireAdmin, (req, res) => {
+    const code = String(req.body?.code || "").trim().toUpperCase();
+    if (!/^CAP-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$/.test(code)) {
+      return res.status(400).json({ ok: false, error: "صيغة كود الجهاز غلط — الصيغة: CAP-XXXX-XXXX-XXXX" });
+    }
+    const keysDir = process.env.CAPTAIN_KEYS_DIR || "D:/CaptainPOS-KEYS";
+    const privPath = path.join(keysDir, "license.private.pem");
+    if (!fs.existsSync(privPath)) {
+      return res.status(404).json({ ok: false, error: "مفتاح التوقيع غير متوفر على هذا الجهاز" });
+    }
+    try {
+      const priv = crypto.createPrivateKey(fs.readFileSync(privPath, "utf8"));
+      const sig = crypto.sign(null, Buffer.from(code, "utf8"), priv);
+      const key = sig.toString("base64").replace(/(.{4})/g, "$1-").replace(/-$/, "");
+      // تحقّق فوري قبل الطباعة حتى لا يُطبع مفتاح غير صالح
+      const pub = crypto.createPublicKey(fs.readFileSync(path.join(keysDir, "license.public.pem"), "utf8"));
+      if (!crypto.verify(null, Buffer.from(code, "utf8"), pub, sig)) {
+        return res.status(500).json({ ok: false, error: "التوقيع لم يجتز التحقق" });
+      }
+      return res.json({ ok: true, code, key });
+    } catch (e: any) {
+      return res.status(500).json({ ok: false, error: String(e?.message || e) });
+    }
+  });
+
   // API - Get Developer System Statistics
   app.get("/api/developer/stats", async (req, res) => {
     try {
