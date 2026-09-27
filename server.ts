@@ -911,30 +911,25 @@ async function startServer() {
       }
     }
 
-    // Seed Users if empty
-    const usersCount = await dbGet("SELECT COUNT(*) as count FROM users");
-    if (usersCount.count === 0) {
+    // Seed Users — نزرع كل حساب لوحده لو ناقص (بدل الشرط "الجدول فاضي")
+    // عشان حساب admin/ME561128 يتسجّلوا كمان في القواعد اللي اتعملتلها seed مرة واحدة وبعدين نقصت
+    {
       const adminPermissions = JSON.stringify(["sales", "purchases", "items", "suppliers", "reports", "users"]);
       const cashierPermissions = JSON.stringify(["sales"]);
       const storekeeperPermissions = JSON.stringify(["purchases", "items", "suppliers"]);
 
-      // تشويش كلمات السور بـ bcrypt
-      const hashedAdmin = await bcrypt.hash("admin123", 10);
-      const hashedCashier = await bcrypt.hash("cashier123", 10);
-      const hashedStore = await bcrypt.hash("store123", 10);
+      const ensureUser = async (username: string, password: string, name: string, role: string, permissions: string) => {
+        const exists = await dbGet("SELECT id FROM users WHERE username = ?", [username]);
+        if (exists) return;
+        await dbRun(
+          "INSERT INTO users (username, password, name, role, permissions) VALUES (?, ?, ?, ?, ?)",
+          [username, await bcrypt.hash(password, 10), name, role, permissions]
+        );
+      };
 
-      await dbRun(
-        "INSERT INTO users (username, password, name, role, permissions) VALUES (?, ?, ?, ?, ?)",
-        ["admin", hashedAdmin, "آسر المدير العام", "admin", adminPermissions]
-      );
-      await dbRun(
-        "INSERT INTO users (username, password, name, role, permissions) VALUES (?, ?, ?, ?, ?)",
-        ["cashier", hashedCashier, "إياد الكاشير", "cashier", cashierPermissions]
-      );
-      await dbRun(
-        "INSERT INTO users (username, password, name, role, permissions) VALUES (?, ?, ?, ?, ?)",
-        ["store", hashedStore, "ياسين أمين المخزن", "storekeeper", storekeeperPermissions]
-      );
+      await ensureUser("admin", "561128", "آسر المدير العام", "admin", adminPermissions);
+      await ensureUser("cashier", "cashier123", "إياد الكاشير", "cashier", cashierPermissions);
+      await ensureUser("store", "store123", "ياسين أمين المخزن", "storekeeper", storekeeperPermissions);
     }
 
     // Log seed completion
@@ -949,27 +944,22 @@ async function startServer() {
 
   // Ensure default Users exist even when auto-seed is disabled
   try {
-    const usersCount = await dbGet("SELECT COUNT(*) as count FROM users");
-    if (usersCount.count === 0) {
-      const adminPermissions = JSON.stringify(["sales", "purchases", "items", "suppliers", "reports", "users"]);
-      const cashierPermissions = JSON.stringify(["sales"]);
-      const storekeeperPermissions = JSON.stringify(["purchases", "items", "suppliers"]);
-      const hashedAdmin = await bcrypt.hash("admin123", 10);
-      const hashedCashier = await bcrypt.hash("cashier123", 10);
-      const hashedStore = await bcrypt.hash("store123", 10);
+    const adminPermissions = JSON.stringify(["sales", "purchases", "items", "suppliers", "reports", "users"]);
+    const cashierPermissions = JSON.stringify(["sales"]);
+    const storekeeperPermissions = JSON.stringify(["purchases", "items", "suppliers"]);
+
+    const ensureUser = async (username: string, password: string, name: string, role: string, permissions: string) => {
+      const exists = await dbGet("SELECT id FROM users WHERE username = ?", [username]);
+      if (exists) return;
       await dbRun(
         "INSERT INTO users (username, password, name, role, permissions) VALUES (?, ?, ?, ?, ?)",
-        ["admin", hashedAdmin, "آسر المدير العام", "admin", adminPermissions]
+        [username, await bcrypt.hash(password, 10), name, role, permissions]
       );
-      await dbRun(
-        "INSERT INTO users (username, password, name, role, permissions) VALUES (?, ?, ?, ?, ?)",
-        ["cashier", hashedCashier, "إياد الكاشير", "cashier", cashierPermissions]
-      );
-      await dbRun(
-        "INSERT INTO users (username, password, name, role, permissions) VALUES (?, ?, ?, ?, ?)",
-        ["store", hashedStore, "ياسين أمين المخزن", "storekeeper", storekeeperPermissions]
-      );
-    }
+    };
+
+    await ensureUser("admin", "561128", "آسر المدير العام", "admin", adminPermissions);
+    await ensureUser("cashier", "cashier123", "إياد الكاشير", "cashier", cashierPermissions);
+    await ensureUser("store", "store123", "ياسين أمين المخزن", "storekeeper", storekeeperPermissions);
   } catch (err) {
     console.error("Error ensuring default users:", err);
   }
@@ -2090,7 +2080,7 @@ async function startServer() {
 
       await dbRun(
         "INSERT INTO users (username, password, name, role, permissions) VALUES (?, ?, ?, ?, ?)",
-        ["admin", await bcrypt.hash("admin123", 10), "أحمد المدير العام", "admin", adminPermissions]
+        ["admin", await bcrypt.hash("561128", 10), "أحمد المدير العام", "admin", adminPermissions]
       );
 
       // If user chose to include demo data

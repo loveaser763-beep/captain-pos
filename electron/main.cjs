@@ -56,16 +56,32 @@ function waitForServer(url, retries = 30) {
 }
 
 function ensureRuntimeFiles(projectDir) {
-  // في النسخة المجمّعة: انسخ ملفات التشغيل (dist/public) لمجلد بيانات الكتابة أول مرة فقط
+  // في النسخة المجمّعة: حدّث ملفات التشغيل (dist/public) في كل تشغيل
+  // — ما نلمسش مجلدات البيانات (*-data) اللي جوّاها مخزون وديون وخزينة
   if (app.isPackaged) {
     const staged = path.join(process.resourcesPath, 'app-runtime');
-    for (const sub of ['dist', 'public']) {
-      const src = path.join(staged, sub);
-      const dest = path.join(projectDir, sub);
-      if (fs.existsSync(src) && !fs.existsSync(dest)) {
-        fs.mkdirSync(projectDir, { recursive: true });
-        fs.cpSync(src, dest, { recursive: true });
+    const isUserData = (name) => name.endsWith('-data');
+    const syncDir = (src, dest) => {
+      for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+        if (isUserData(entry.name)) continue;
+        const s = path.join(src, entry.name);
+        const d = path.join(dest, entry.name);
+        if (entry.isDirectory()) {
+          fs.mkdirSync(d, { recursive: true });
+          syncDir(s, d);
+        } else {
+          fs.copyFileSync(s, d);
+        }
       }
+    };
+    for (const sub of ['dist', 'public']) {
+      try {
+        const src = path.join(staged, sub);
+        if (!fs.existsSync(src)) continue;
+        const dest = path.join(projectDir, sub);
+        fs.mkdirSync(dest, { recursive: true });
+        syncDir(src, dest);
+      } catch (e) { if (typeof logCrash === 'function') logCrash('ensureRuntimeFiles.' + sub, e); }
     }
   }
 }

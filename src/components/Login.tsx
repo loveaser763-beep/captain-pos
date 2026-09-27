@@ -26,18 +26,14 @@ const FEATURES: { icon: React.ElementType; title: string; sub: string }[] = [
 ];
 
 export default function Login({ onLoginSuccess }: LoginProps) {
-  const [username, setUsername] = useState("admin");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [maskUsername, setMaskUsername] = useState(false);
+  const [maskUsername, setMaskUsername] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [devMode, setDevMode] = useState(false);
-  const [devUser, setDevUser] = useState("");
-  const [devPass, setDevPass] = useState("");
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!username || !password) {
+  const doLogin = async (u: string, p: string) => {
+    if (!u || !p) {
       setError("الرجاء إدخال اسم المستخدم وكلمة المرور.");
       return;
     }
@@ -46,7 +42,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
     setError("");
 
     try {
-      const data = await apiLogin(username, password);
+      const data = await apiLogin(u, p);
       if (data.success && data.user) {
         onLoginSuccess(data.user);
       } else {
@@ -59,50 +55,31 @@ export default function Login({ onLoginSuccess }: LoginProps) {
     }
   };
 
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    void doLogin(username, password);
+  };
+
+  // أزرار التجربة السريعة: تملّي الحساب وتفتحه على طول
   const fillCredentials = (role: string) => {
+    let u = "";
+    let p = "";
     if (role === "admin") {
-      setUsername("admin");
-      setPassword("admin123");
-      setMaskUsername(false);
+      u = "admin";
+      p = "561128";
     } else if (role === "cashier") {
-      setUsername("cashier");
-      setPassword("cashier123");
-      setMaskUsername(false);
+      u = "cashier";
+      p = "cashier123";
     } else if (role === "storekeeper") {
-      setUsername("store");
-      setPassword("store123");
-      setMaskUsername(false);
+      u = "store";
+      p = "store123";
     }
+    if (!u) return;
+    setUsername(u);
+    setPassword(p);
+    setMaskUsername(true);
     setError("");
-  };
-
-  const cancelDevGate = () => {
-    setDevMode(false);
-    setDevUser("");
-    setDevPass("");
-    setError("");
-  };
-
-  const submitDevGate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!devUser || !devPass) {
-      setError("الرجاء إدخال اسم المستخدم وكلمة المرور.");
-      return;
-    }
-    setLoading(true);
-    setError("");
-    try {
-      const data = await apiLogin(devUser, devPass);
-      if (data.success && data.user) {
-        onLoginSuccess(data.user);
-      } else {
-        setError(data.message || "اسم المستخدم أو كلمة المرور غير صحيحة.");
-      }
-    } catch (err) {
-      setError("حدث خطأ في الاتصال بالشبكة. يرجى التأكد من تشغيل خادم Node.js الخلفي بنجاح.");
-    } finally {
-      setLoading(false);
-    }
+    void doLogin(u, p);
   };
 
   const BrandMark = ({ size = 54 }: { size?: number }) => (
@@ -221,7 +198,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
                   autoComplete={maskUsername ? "off" : "username"}
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  placeholder="اسم المستخدم"
+                  placeholder="admin"
                   className="login-field"
                 />
                 <span className="pointer-events-none absolute inset-y-0 right-0 flex w-11 items-center justify-center text-[var(--text-muted)]">
@@ -265,75 +242,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
             </button>
           </form>
 
-          {/* بوابة دخول المبرمج — بتطلب البيانات يدويًا من غير ما تفضحها */}
-          {devMode ? (
-            <div className="mt-7 border-t border-[var(--border)] pt-6" id="login-dev-gate">
-              <div className="mb-4 flex items-center gap-3">
-                <span className="h-px flex-1 bg-[var(--border)]" />
-                <span className="text-[10px] font-black tracking-[0.18em] text-[var(--danger)]">
-                  🔒 دخول المبرمج
-                </span>
-                <span className="h-px flex-1 bg-[var(--border)]" />
-              </div>
-
-              <p className="mb-4 text-center text-[11px] font-bold leading-relaxed text-[var(--text-muted)]">
-                أدخل بيانات الاعتماد يدويًا — مش محفوظة ولا بتظهر لأي حد.
-              </p>
-
-              <form onSubmit={submitDevGate} className="space-y-3">
-                <div className="relative">
-                  <input
-                    id="dev-input-username"
-                    type="text"
-                    autoComplete="off"
-                    spellCheck={false}
-                    value={devUser}
-                    onChange={(e) => setDevUser(e.target.value)}
-                    placeholder="اسم المستخدم"
-                    className="login-field"
-                  />
-                  <span className="pointer-events-none absolute inset-y-0 right-0 flex w-11 items-center justify-center text-[var(--text-muted)]">
-                    <UserIcon size={16} strokeWidth={1.7} />
-                  </span>
-                </div>
-
-                <div className="relative">
-                  <input
-                    id="dev-input-password"
-                    type="password"
-                    autoComplete="new-password"
-                    value={devPass}
-                    onChange={(e) => setDevPass(e.target.value)}
-                    placeholder="كلمة المرور"
-                    className="login-field"
-                  />
-                  <span className="pointer-events-none absolute inset-y-0 right-0 flex w-11 items-center justify-center text-[var(--text-muted)]">
-                    <Lock size={16} strokeWidth={1.7} />
-                  </span>
-                </div>
-
-                <div className="flex gap-2 pt-1">
-                  <button
-                    id="btn-dev-confirm"
-                    type="submit"
-                    disabled={loading}
-                    className="login-chip login-chip-strong flex-1"
-                  >
-                    {loading ? "جاري التحقق…" : "تأكيد الدخول"}
-                  </button>
-                  <button
-                    id="btn-dev-cancel"
-                    type="button"
-                    onClick={cancelDevGate}
-                    disabled={loading}
-                    className="login-chip flex-1"
-                  >
-                    إلغاء
-                  </button>
-                </div>
-              </form>
-            </div>
-          ) : (
+          {/* حسابات التجربة السريعة */}
             <div className="mt-7 border-t border-[var(--border)] pt-6" id="login-helper-accounts">
               <div className="mb-4 flex items-center gap-3">
                 <span className="h-px flex-1 bg-[var(--border)]" />
@@ -372,24 +281,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
                   أمين المخزن
                 </button>
               </div>
-
-              <button
-                id="btn-fill-developer"
-                type="button"
-                onClick={() => {
-                  setDevMode(true);
-                  setDevUser("");
-                  setDevPass("");
-                  setError("");
-                }}
-                disabled={loading}
-                title="دخول المبرمج — بيطلب البيانات يدويًا"
-                className="login-chip login-chip-secret"
-              >
-                •••&nbsp;&nbsp;دخول المبرمج
-              </button>
             </div>
-          )}
 
           <div className="mt-7 text-center text-[10.5px] font-bold text-[var(--text-muted)]">
             منظومة الكابتن — لهندسة الأرقام وريادة الأعمال © 2026
