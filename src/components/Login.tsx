@@ -61,26 +61,22 @@ export default function Login({ onLoginSuccess }: LoginProps) {
     void doLogin(username, password);
   };
 
-  // أزرار التجربة السريعة: تملّي الحساب وتفتحه على طول
+  // زر الدخول السريع: يملّي اسم المستخدم بس وينتظر كتابة كلمة المرور يدويًا
   const fillCredentials = (role: string) => {
     let u = "";
-    let p = "";
     if (role === "admin") {
       u = "admin";
-      p = "561128";
     } else if (role === "cashier") {
       u = "cashier";
-      p = "cashier123";
     } else if (role === "storekeeper") {
       u = "store";
-      p = "store123";
     }
     if (!u) return;
     setUsername(u);
-    setPassword(p);
-    setMaskUsername(true);
+    setPassword("");
+    setMaskUsername(false);
     setError("");
-    void doLogin(u, p);
+    setTimeout(() => document.getElementById("input-password")?.focus(), 0);
   };
 
   const BrandMark = ({ size = 54 }: { size?: number }) => (
