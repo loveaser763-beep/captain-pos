@@ -13,23 +13,18 @@ import {
   ClipboardCheck,
   Cpu,
   Terminal,
-  Store,
-  Sparkles,
   FileText,
   CreditCard
 } from "lucide-react";
 import { User } from "../types";
 import ThemeSwitcher from "./ThemeSwitcher";
 import { authFetch } from "../authFetch";
-import { isZestyHidden } from "../hideZesty";
 
 interface SidebarProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
   currentUser: User | null;
   onLogout: () => void;
-  entity: "jameety" | "zesty";
-  onSelectEntity: (e: "jameety" | "zesty") => void;
 }
 
 // ألوان متدرجة لكل قسم
@@ -47,7 +42,6 @@ const tabColors: Record<string, string> = {
   settings: "from-slate-600 to-gray-800",
   treasury: "from-yellow-500 to-amber-700",
   developer: "from-red-600 to-rose-800",
-  jameety: "from-amber-500 to-orange-600",
   tamween: "from-teal-500 to-cyan-600",
 };
 
@@ -55,9 +49,7 @@ export default function Sidebar({
   activeTab,
   setActiveTab,
   currentUser,
-  onLogout,
-  entity,
-  onSelectEntity
+  onLogout
 }: SidebarProps) {
   const [marketName, setMarketName] = useState("منظومة الكابتن");
 
@@ -88,7 +80,6 @@ export default function Sidebar({
     { id: "inventory_audit", label: "جرد المخزن الكلي", description: "جرد شامل للمخزون", icon: ClipboardCheck, permission: "items" },
     { id: "users", label: "إدارة المستخدمين", description: "إدارة حسابات النظام", icon: Users, permission: "users" },
     { id: "settings", label: "إعدادات النظام", description: "ضبط إعدادات النظام", icon: Settings, permission: "admin" },
-    { id: "jameety", label: "🏪 جمعيتي", description: "إدارة التموين", icon: Store, permission: "jameety" },
     { id: "developer", label: "لوحة تحكم المبرمج", description: "أدوات المبرمج", icon: Terminal, permission: "developer" }
   ];
 
@@ -102,9 +93,7 @@ export default function Sidebar({
     return currentUser.permissions?.includes(tab.permission);
   });
 
-  // فصل "جمعيتي" عن باقي الأقسام (يظهر كزر ثابت أسفل زر الأقسام)
-  const sectionsTabs = allowedTabs.filter(t => t.id !== "jameety");
-  const jameetyTab = allowedTabs.find(t => t.id === "jameety");
+  const sectionsTabs = allowedTabs;
 
   return (
     <>
@@ -147,36 +136,6 @@ export default function Sidebar({
             );
           })}
         </nav>
-
-        {/* إدارة التموين - جمعيتي + زيستي */}
-        {jameetyTab && (
-          <div className="p-2 border-b border-[var(--border)] shrink-0 space-y-1">
-            <p className="text-[10px] font-black lux-bar-muted px-1">إدارة التموين</p>
-            {([
-              { e: "jameety" as const, label: "جمعيتي", sub: "التموين الرئيسي", Icon: Store, grad: "from-amber-400 to-orange-600" },
-              { e: "zesty" as const, label: "زيستي", sub: "(نادي بورتو الرياضي)", Icon: Sparkles, grad: "from-cyan-400 to-blue-600" },
-            ]).filter(({ e }) => e !== "zesty" || !isZestyHidden()).map(({ e, label, sub, Icon, grad }) => {
-              const isActive = activeTab === "jameety" && entity === e;
-              return (
-                <button
-                  key={e}
-                  onClick={() => onSelectEntity(e)}
-                  className={`w-full flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-all duration-300 cursor-pointer group border mr-3 ${isActive ? "bg-gradient-to-l from-amber-500/25 to-orange-600/15 border-amber-400/60" : "hover:bg-[var(--accent-subtle)] border-transparent hover:border-[var(--border)]"}`}
-                  title={label + " - " + sub}
-                  id={e === "jameety" ? "jameety-menu-button" : "zesty-menu-button"}
-                >
-                  <div className={`w-8 h-8 rounded-lg bg-gradient-to-br ${grad} flex items-center justify-center shadow-lg shrink-0`}>
-                    <Icon size={17} strokeWidth={2} className="text-white" />
-                  </div>
-                  <div className="text-right min-w-0">
-                    <div className={`text-xs font-black truncate ${isActive ? "text-[var(--warning)]" : "text-[var(--text-primary)]"}`}>{e === "jameety" ? "🏪 جمعيتي" : label}</div>
-                    <div className={`text-[10px] font-semibold ${isActive ? "text-[var(--warning)] opacity-80" : "text-[var(--text-secondary)]"}`}>{sub}</div>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        )}
 
         {/* معلومات المستخدم في الأسفل */}
         <div className="mt-auto p-2 border-t border-[var(--border)] flex items-center justify-between shrink-0" id="sidebar-user-card">

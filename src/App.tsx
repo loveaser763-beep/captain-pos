@@ -14,7 +14,6 @@ import Settings from "./components/Settings";
 import Treasury from "./components/Treasury";
 import InventoryAudit from "./components/InventoryAudit";
 import DeveloperPanel from "./components/DeveloperPanel";
-import Jameety from "./components/Jameety";
 import { Menu, PanelLeftClose, PanelLeftOpen, Minus, Square, X } from "lucide-react";
 import UnifiedPrintButton from "./components/UnifiedPrintButton";
 import { applyTheme, getSavedTheme } from "./components/ThemeSwitcher";
@@ -32,8 +31,6 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [activeTab, setActiveTab] = useState("dashboard");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-  const [jameetyEntity, setJameetyEntity] = useState<"jameety" | "zesty">("jameety");
-  const [jameetyPrint, setJameetyPrint] = useState({ id: "closing-printable-area", title: "طباعة التقفيلة" });
   const [tamweenCustomerForSale, setTamweenCustomerForSale] = useState<any>(null);
   const sidebarTimerRef = useRef<any>(null);
   const topBarRef = useRef<HTMLDivElement | null>(null);
@@ -59,13 +56,7 @@ export default function App() {
     return () => ro.disconnect();
   }, []);
 
-  // تتبع التبويب النشط داخل جمعيتي/زيستي لزر الطباعة العام
   useEffect(() => {
-    const onTarget = (e: Event) => {
-      const d = (e as CustomEvent).detail;
-      if (d?.id) setJameetyPrint({ id: d.id, title: d.title || "طباعة" });
-    };
-    window.addEventListener("jameety-print-target", onTarget);
     // شبكة أمان الفوكس: أي حوار نظام (طباعة/سكرين/تنبيه) بيسرق فوكس النافذة
     // والحقول بتبان مجمدة — أول ما الصفحة ترجع ظاهرة نرجع الفوكس من العملية الرئيسية
     // (بدون الاستماع لحدث focus نفسه حتى لا تتكون حلقة فوكس تجمد الكتابة)
@@ -76,7 +67,6 @@ export default function App() {
     };
     document.addEventListener("visibilitychange", onVis);
     return () => {
-      window.removeEventListener("jameety-print-target", onTarget);
       document.removeEventListener("visibilitychange", onVis);
     };
   }, []);
@@ -142,12 +132,6 @@ export default function App() {
     setActiveTab("dashboard");
   };
 
-  const openJameetyEntity = (e: "jameety" | "zesty") => {
-    setJameetyEntity(e);
-    setActiveTab("jameety");
-    setIsSidebarCollapsed(true);
-  };
-
   // Switch Sub-views - التنقل بالضغط فقط (شِلنا معاينة الهوفر اللي كانت بتقلب الصفحة وترجعك قبل ما تشوفها)
   const displayTab = activeTab;
   const printableMap: Record<string, string> = {
@@ -164,7 +148,6 @@ export default function App() {
     settings: "printable-settings",
     treasury: "printable-treasury",
     developer: "printable-developer",
-    jameety: "closing-printable-area",
     tamween_customers: "printable-tamween-customers",
   };
   const renderActiveView = () => {
@@ -212,10 +195,6 @@ export default function App() {
           setTamweenCustomerForSale(customer);
           setActiveTab("sales");
         }} />;
-      case "jameety":
-        // مفتاح ثابت على الكيان الحقيقي: معاينة الهوفر كانت تركب جمعيتي من جديد
-        // مع كل حركة ماوس فيرجع الشهر المخزن ويضيع اختيار المستخدم
-        return <Jameety key={jameetyEntity} initialEntity={jameetyEntity} />;
       default:
         return <Dashboard currentUser={currentUser} onNavigateToTab={(tab) => setActiveTab(tab)} />;
     }
@@ -261,8 +240,6 @@ export default function App() {
           }}
           currentUser={currentUser}
           onLogout={handleLogout}
-          entity={jameetyEntity}
-          onSelectEntity={openJameetyEntity}
         />
       </div>
 
@@ -294,7 +271,7 @@ export default function App() {
             </div>
             <div className="flex items-center gap-2 sm:gap-3 text-xs lux-bar-muted font-medium shrink-0">
               <div style={{ WebkitAppRegion: 'no-drag' } as any}>
-                <UnifiedPrintButton printableId={displayTab === "jameety" ? jameetyPrint.id : (printableMap[displayTab] || "app-viewport-inner")} title={displayTab === "jameety" ? jameetyPrint.title : "طباعة"} />
+                <UnifiedPrintButton printableId={printableMap[displayTab] || "app-viewport-inner"} title="طباعة" />
               </div>
               <LangIndicator />
               <div className="hidden xl:flex items-center gap-3">

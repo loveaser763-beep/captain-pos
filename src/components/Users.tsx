@@ -33,7 +33,6 @@ export default function UsersManagement({ currentUser }: UsersProps) {
     { id: "suppliers", label: "إدارة الموردين والجهات" },
     { id: "reports", label: "سحب التقارير والأرباح" },
     { id: "users", label: "التحكم في مستخدمي النظام وصلاحياتهم" },
-    { id: "jameety", label: "🏪 جمعيتي (إدارة حسابات الجمعيتي)" },
     { id: "dashboard_stats", label: "رؤية الأرقام والإحصائيات المالية بالشاشة الرئيسية" },
     { id: "view_purchases_invoices", label: "عرض فواتير المشتريات بالشاشة الرئيسية" },
     { id: "edit_invoice", label: "تعديل الفواتير من الشاشة الرئيسية" },
