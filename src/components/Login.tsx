@@ -13,6 +13,7 @@ import {
 import { User } from "../types";
 import LangIndicator from "./LangIndicator";
 import { login as apiLogin } from "../authFetch";
+import "../login3d.css";
 
 interface LoginProps {
   onLoginSuccess: (user: User) => void;
@@ -90,10 +91,22 @@ export default function Login({ onLoginSuccess }: LoginProps) {
 
   return (
     <div
-      className="lux-scope min-h-screen flex select-none font-sans"
+      className="lux-scope relative min-h-screen flex select-none font-sans overflow-hidden"
       id="login-screen"
       style={{ direction: "rtl" }}
     >
+      {/* ============ خلفية ملء الصفحة — شعار المنظومة (ثابتة بلا حركة) ============ */}
+      <div className="login-3d" aria-hidden="true">
+        <div className="login-3d__glow" />
+        <div className="login-3d__grid" />
+        <div className="login-3d__stage login-3d__stage--far">
+          <img src="/icon.png" alt="" className="login-3d__logo" draggable={false} />
+        </div>
+        <div className="login-3d__stage login-3d__stage--near">
+          <img src="/icon.png" alt="" className="login-3d__logo" draggable={false} />
+        </div>
+        <div className="login-3d__scrim" />
+      </div>
       {/* ============ عمود العلامة (يمين) ============ */}
       <aside className="login-brand relative hidden lg:flex w-[44%] max-w-[580px] shrink-0 flex-col justify-between overflow-hidden p-10 xl:p-14">
         <div className="login-brand-grid" aria-hidden="true" />
