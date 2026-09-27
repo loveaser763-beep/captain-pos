@@ -5,26 +5,16 @@ import {
   AlertTriangle,
   ArrowLeft,
   Cpu,
-  Store,
-  Package,
-  BarChart3,
-  Wallet,
 } from "lucide-react";
 import { User } from "../types";
 import LangIndicator from "./LangIndicator";
 import { login as apiLogin } from "../authFetch";
 import "../login3d.css";
+import "../login-variants.css";
 
 interface LoginProps {
   onLoginSuccess: (user: User) => void;
 }
-
-const FEATURES: { icon: React.ElementType; title: string; sub: string }[] = [
-  { icon: Store, title: "نقطة بيع وفواتير", sub: "بيع سريع وطباعة فورية" },
-  { icon: Package, title: "مخزون ومشتريات", sub: "جرد وتوريد وتحت الحساب" },
-  { icon: BarChart3, title: "تقارير ومطابقة التموين", sub: "أرباح واستعاضات ونقاط" },
-  { icon: Wallet, title: "خزينة وتقسيط", sub: "مقبوضات ومدفوعات وشرائح" },
-];
 
 export default function Login({ onLoginSuccess }: LoginProps) {
   const [username, setUsername] = useState("");
@@ -32,6 +22,23 @@ export default function Login({ onLoginSuccess }: LoginProps) {
   const [maskUsername, setMaskUsername] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  // نموذج الصفحة الحالي (glass | matte | slim) — وزر التبديل في أسفل الشاشة
+  const STYLES: Array<"glass" | "matte" | "slim"> = ["glass", "matte", "slim"];
+  const STYLE_LABELS: Record<string, string> = { glass: "زجاجي", matte: "داكن ذهبي", slim: "مدمج" };
+  const [styleKey, setStyleKey] = useState<"glass" | "matte" | "slim">(() => {
+    try {
+      const v = localStorage.getItem("cap_login_style");
+      return v === "matte" || v === "slim" ? v : "glass";
+    } catch {
+      return "glass";
+    }
+  });
+  const cycleStyle = () => {
+    const next = STYLES[(STYLES.indexOf(styleKey) + 1) % STYLES.length];
+    setStyleKey(next);
+    try { localStorage.setItem("cap_login_style", next); } catch {}
+  };
 
   const doLogin = async (u: string, p: string) => {
     if (!u || !p) {
@@ -87,216 +94,228 @@ export default function Login({ onLoginSuccess }: LoginProps) {
 
   return (
     <div
-      className="lux-scope relative min-h-screen flex select-none font-sans overflow-hidden"
+      className={`lux-scope relative min-h-screen flex items-center justify-center select-none font-sans overflow-hidden login-style-${styleKey}`}
       id="login-screen"
       style={{ direction: "rtl" }}
     >
-      {/* ============ خلفية ملء الصفحة — شعار المنظومة (ثابتة بلا حركة) ============ */}
+      {/* ============ الخلفية: نموذج 4B — تاج ذهبي + شبكة على كحلي ============ */}
       <div className="login-3d" aria-hidden="true">
-        <div className="login-3d__glow" />
-        <div className="login-3d__grid" />
-        <div className="login-3d__stage login-3d__stage--far">
-          <img src="/icon.png" alt="" className="login-3d__logo" draggable={false} />
-        </div>
-        <div className="login-3d__stage login-3d__stage--near">
-          <img src="/icon.png" alt="" className="login-3d__logo" draggable={false} />
-        </div>
+        <svg
+          className="login-3d__art"
+          viewBox="0 0 1366 728"
+          preserveAspectRatio="xMidYMid slice"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <defs>
+            <linearGradient id="capGold4b" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stopColor="#FCEFC0" />
+              <stop offset="55%" stopColor="#E4B95B" />
+              <stop offset="100%" stopColor="#A9752A" />
+            </linearGradient>
+            <filter id="capCrownGlow" x="-35%" y="-35%" width="170%" height="170%">
+              <feGaussianBlur stdDeviation="5" result="b" />
+              <feMerge>
+                <feMergeNode in="b" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+          </defs>
+
+          {/* شبكة الشبكة + العُقد */}
+          <g stroke="url(#capGold4b)" strokeWidth="1.3" fill="none" opacity="0.45">
+            <path d="M50,640 L300,470 L520,540 L683,436 L880,510 L1080,420 L1316,580" />
+            <path d="M100,340 L340,450 L540,340 L683,436 L840,310 L1040,400 L1266,310" />
+            <path d="M300,470 L340,450 M520,540 L540,340 M880,510 L840,310 M1080,420 L1040,400" />
+            <path d="M50,640 L100,340 M1316,580 L1266,310 M683,436 L683,264 M540,340 L683,264 M840,310 L683,264" />
+          </g>
+          <g fill="url(#capGold4b)">
+            <circle cx="50" cy="640" r="6" />
+            <circle cx="300" cy="470" r="8" />
+            <circle cx="520" cy="540" r="6" />
+            <circle cx="683" cy="436" r="12" />
+            <circle cx="880" cy="510" r="8" />
+            <circle cx="1080" cy="420" r="6" />
+            <circle cx="1316" cy="580" r="6" />
+            <circle cx="100" cy="340" r="5" />
+            <circle cx="340" cy="450" r="5" />
+            <circle cx="540" cy="340" r="5" />
+            <circle cx="840" cy="310" r="5" />
+            <circle cx="1040" cy="400" r="5" />
+            <circle cx="1266" cy="310" r="5" />
+            <circle cx="683" cy="264" r="7" />
+          </g>
+
+          {/* التاج الذهبي + الشريط تحته */}
+          <g transform="translate(683,296) scale(0.98)" filter="url(#capCrownGlow)">
+            <path
+              d="M-150,-40 L-86,-124 L-40,-64 L0,-152 L40,-64 L86,-124 L150,-40 L130,4 L-130,4 Z"
+              fill="url(#capGold4b)"
+            />
+            <rect x="-130" y="28" width="260" height="18" rx="9" fill="url(#capGold4b)" opacity="0.9" />
+            <circle cx="0" cy="-176" r="16" fill="url(#capGold4b)" />
+          </g>
+
+          {/* أعمدة بيانية في الأسفل */}
+          <g fill="url(#capGold4b)" opacity="0.7">
+            <rect x="170" y="636" width="17" height="62" rx="8" />
+            <rect x="202" y="606" width="17" height="92" rx="8" />
+            <rect x="234" y="650" width="17" height="48" rx="8" />
+            <rect x="1148" y="636" width="17" height="62" rx="8" />
+            <rect x="1180" y="600" width="17" height="98" rx="8" />
+            <rect x="1212" y="648" width="17" height="50" rx="8" />
+          </g>
+        </svg>
         <div className="login-3d__scrim" />
       </div>
-      {/* ============ عمود العلامة (يمين) ============ */}
-      <aside className="login-brand relative hidden lg:flex w-[44%] max-w-[580px] shrink-0 flex-col justify-between overflow-hidden p-10 xl:p-14">
-        <div className="login-brand-grid" aria-hidden="true" />
-        <div className="login-brand-blob" aria-hidden="true" />
 
-        {/* هوية */}
-        <div className="relative z-10 flex items-center gap-4">
-          <BrandMark />
-          <div className="leading-tight">
-            <div className="text-[19px] font-black tracking-[0.16em]">منظومة الكابتن</div>
-            <div className="mt-1 text-[10px] font-black uppercase tracking-[0.34em] opacity-70">
-              Captain POS Suite
-            </div>
+      {/* ============ الهوية — في الزاوية المقابلة للوحة ============ */}
+      <div className="login-corner-brand">
+        <BrandMark size={38} />
+        <div className="leading-tight">
+          <div className="text-[14.5px] font-black tracking-[0.14em] text-[var(--text-primary)]">
+            منظومة الكابتن
+          </div>
+          <div className="mt-0.5 text-[10px] font-black tracking-[0.1em] text-[var(--text-secondary)]">
+            لهندسة الأرقام وريادة الأعمال
           </div>
         </div>
+      </div>
 
-        {/* العرض القيمي */}
-        <div className="relative z-10 my-8">
-          <h1 className="text-[26px] xl:text-[31px] font-black leading-[1.4] max-w-[16ch]">
-            منصّة واحدة
-            <br />
-            لإدارة بيتك تجاريًا.
-          </h1>
-          <p className="mt-3 max-w-[38ch] text-[13px] font-semibold leading-relaxed opacity-80">
-            مبيعات، مخزون، خزينة، وتقارير لحظية — كلها متجمّعة في شاشة واحدة تتابعها لحظة بلحظة.
-          </p>
-
-          <ul className="mt-7 space-y-3.5">
-            {FEATURES.map((f) => {
-              const Icon = f.icon;
-              return (
-                <li key={f.title} className="flex items-center gap-3">
-                  <span className="login-feat-icon">
-                    <Icon size={16} strokeWidth={1.8} />
-                  </span>
-                  <span className="leading-tight">
-                    <span className="block text-[13px] font-black">{f.title}</span>
-                    <span className="block text-[11px] font-semibold opacity-70">{f.sub}</span>
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
+      {/* ============ لوحة الدخول الصغيرة ============ */}
+      <div className="login-corner-panel" id="login-card">
+        <div className="login-panel-head mb-6">
+          <h2>أهلًا بك من جديد</h2>
+          <p>سجّل دخولك عشان تكمّل شغلك في التحكم بالمتجر والمبيعات.</p>
         </div>
 
-        {/* تذييل */}
-        <div className="relative z-10 flex items-center justify-between gap-4 text-[11px] font-black">
-          <span className="opacity-80">لهندسة الأرقام وريادة الأعمال</span>
-          <span className="opacity-60 font-mono">v3.1 · 2026</span>
-        </div>
-      </aside>
+        {/* صندوق الخطأ */}
+        {error && (
+          <div
+            id="login-error"
+            className="mb-5 flex items-start gap-3 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-input)] p-3.5"
+            role="alert"
+          >
+            <AlertTriangle size={16} className="mt-0.5 shrink-0 text-[var(--danger)]" />
+            <p className="text-xs font-bold leading-snug text-[var(--danger)]">{error}</p>
+          </div>
+        )}
 
-      {/* ============ لوحة النموذج (يسار) ============ */}
-      <main className="relative flex flex-1 min-w-0 items-center justify-center px-5 py-8 sm:px-8">
-        <div className="absolute top-5 left-5 z-10">
-          <LangIndicator compact />
-        </div>
-
-        <div className="w-full max-w-[420px]" id="login-card">
-          {/* هوية مصغّرة للشاشات الصغيرة */}
-          <div className="mb-8 flex items-center gap-3 lg:hidden">
-            <BrandMark size={42} />
-            <div className="leading-tight">
-              <div className="text-[15px] font-black tracking-[0.1em]">منظومة الكابتن</div>
-              <div className="text-[9.5px] font-black uppercase tracking-[0.28em] text-[var(--text-muted)]">
-                Captain POS Suite
-              </div>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label htmlFor="input-username" className="lux-label">
+              اسم المستخدم
+            </label>
+            <div className="relative">
+              <input
+                id="input-username"
+                type={maskUsername ? "password" : "text"}
+                autoComplete={maskUsername ? "off" : "username"}
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="admin"
+                className="login-field"
+              />
+              <span className="pointer-events-none absolute inset-y-0 right-0 flex w-11 items-center justify-center text-[var(--text-muted)]">
+                <UserIcon size={16} strokeWidth={1.7} />
+              </span>
             </div>
           </div>
 
-          {/* العنوان */}
-          <div className="mb-7">
-            <h2 className="text-[23px] font-black leading-tight text-[var(--text-primary)]">
-              أهلًا بك من جديد
-            </h2>
-            <p className="mt-2 text-[13px] font-semibold leading-relaxed text-[var(--text-secondary)]">
-              سجّل دخولك عشان تكمّل شغلك في التحكم بالمتجر والمبيعات.
-            </p>
+          <div>
+            <label htmlFor="input-password" className="lux-label">
+              كلمة المرور
+            </label>
+            <div className="relative">
+              <input
+                id="input-password"
+                type="password"
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                className="login-field"
+              />
+              <span className="pointer-events-none absolute inset-y-0 right-0 flex w-11 items-center justify-center text-[var(--text-muted)]">
+                <Lock size={16} strokeWidth={1.7} />
+              </span>
+            </div>
           </div>
 
-          {/* صندوق الخطأ */}
-          {error && (
-            <div
-              id="login-error"
-              className="mb-6 flex items-start gap-3 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-input)] p-3.5"
-              role="alert"
+          <button id="btn-login-submit" type="submit" disabled={loading} className="login-submit">
+            {loading ? (
+              <>
+                <span className="login-spinner" />
+                <span>جاري التحقق…</span>
+              </>
+            ) : (
+              <>
+                <span>تسجيل الدخول</span>
+                <ArrowLeft size={17} strokeWidth={2.2} />
+              </>
+            )}
+          </button>
+        </form>
+
+        {/* حسابات التجربة السريعة */}
+        <div className="mt-6 border-t border-[var(--border)] pt-5" id="login-helper-accounts">
+          <div className="mb-3.5 flex items-center gap-3">
+            <span className="h-px flex-1 bg-[var(--border)]" />
+            <span className="text-[10px] font-black tracking-[0.18em] text-[var(--text-muted)]">
+              دخول سريع
+            </span>
+            <span className="h-px flex-1 bg-[var(--border)]" />
+          </div>
+
+          <div className="grid grid-cols-3 gap-2">
+            <button
+              id="btn-fill-admin"
+              type="button"
+              onClick={() => fillCredentials("admin")}
+              disabled={loading}
+              className="login-chip"
             >
-              <AlertTriangle size={16} className="mt-0.5 shrink-0 text-[var(--danger)]" />
-              <p className="text-xs font-bold leading-snug text-[var(--danger)]">{error}</p>
-            </div>
-          )}
-
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label htmlFor="input-username" className="lux-label">
-                اسم المستخدم
-              </label>
-              <div className="relative">
-                <input
-                  id="input-username"
-                  type={maskUsername ? "password" : "text"}
-                  autoComplete={maskUsername ? "off" : "username"}
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  placeholder="admin"
-                  className="login-field"
-                />
-                <span className="pointer-events-none absolute inset-y-0 right-0 flex w-11 items-center justify-center text-[var(--text-muted)]">
-                  <UserIcon size={16} strokeWidth={1.7} />
-                </span>
-              </div>
-            </div>
-
-            <div>
-              <label htmlFor="input-password" className="lux-label">
-                كلمة المرور
-              </label>
-              <div className="relative">
-                <input
-                  id="input-password"
-                  type="password"
-                  autoComplete="current-password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••"
-                  className="login-field"
-                />
-                <span className="pointer-events-none absolute inset-y-0 right-0 flex w-11 items-center justify-center text-[var(--text-muted)]">
-                  <Lock size={16} strokeWidth={1.7} />
-                </span>
-              </div>
-            </div>
-
-            <button id="btn-login-submit" type="submit" disabled={loading} className="login-submit">
-              {loading ? (
-                <>
-                  <span className="login-spinner" />
-                  <span>جاري التحقق…</span>
-                </>
-              ) : (
-                <>
-                  <span>تسجيل الدخول</span>
-                  <ArrowLeft size={17} strokeWidth={2.2} />
-                </>
-              )}
+              المدير
             </button>
-          </form>
-
-          {/* حسابات التجربة السريعة */}
-            <div className="mt-7 border-t border-[var(--border)] pt-6" id="login-helper-accounts">
-              <div className="mb-4 flex items-center gap-3">
-                <span className="h-px flex-1 bg-[var(--border)]" />
-                <span className="text-[10px] font-black tracking-[0.18em] text-[var(--text-muted)]">
-                  تجربة سريعة
-                </span>
-                <span className="h-px flex-1 bg-[var(--border)]" />
-              </div>
-
-              <div className="grid grid-cols-3 gap-2">
-                <button
-                  id="btn-fill-admin"
-                  type="button"
-                  onClick={() => fillCredentials("admin")}
-                  disabled={loading}
-                  className="login-chip"
-                >
-                  المدير
-                </button>
-                <button
-                  id="btn-fill-cashier"
-                  type="button"
-                  onClick={() => fillCredentials("cashier")}
-                  disabled={loading}
-                  className="login-chip"
-                >
-                  الكاشير
-                </button>
-                <button
-                  id="btn-fill-store"
-                  type="button"
-                  onClick={() => fillCredentials("storekeeper")}
-                  disabled={loading}
-                  className="login-chip"
-                >
-                  أمين المخزن
-                </button>
-              </div>
-            </div>
-
-          <div className="mt-7 text-center text-[10.5px] font-bold text-[var(--text-muted)]">
-            منظومة الكابتن — لهندسة الأرقام وريادة الأعمال © 2026
+            <button
+              id="btn-fill-cashier"
+              type="button"
+              onClick={() => fillCredentials("cashier")}
+              disabled={loading}
+              className="login-chip"
+            >
+              الكاشير
+            </button>
+            <button
+              id="btn-fill-store"
+              type="button"
+              onClick={() => fillCredentials("storekeeper")}
+              disabled={loading}
+              className="login-chip"
+            >
+              أمين المخزن
+            </button>
           </div>
         </div>
-      </main>
+
+        <div className="login-panel-foot">
+          منظومة الكابتن — لهندسة الأرقام وريادة الأعمال © 2026
+        </div>
+      </div>
+
+      {/* ============ سطور صغيرة أسفل الشاشة ============ */}
+      <div className="login-corner-meta">v3.1 · 2026</div>
+      <button
+        type="button"
+        id="btn-login-style"
+        onClick={cycleStyle}
+        className="login-style-switch"
+        title="تبديل نموذج شاشة الدخول"
+      >
+        النموذج: {STYLE_LABELS[styleKey]}
+      </button>
+      <div className="login-lang">
+        <LangIndicator compact />
+      </div>
     </div>
   );
 }
