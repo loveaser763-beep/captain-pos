@@ -86,11 +86,23 @@ function ensureRuntimeFiles(projectDir) {
   }
 }
 
+function resolveProjectDir(isDev) {
+  // وضع التطوير: مجلد المشروع نفسه
+  if (isDev) return path.join(__dirname, '..');
+  // المنظومة الموحدة: بيانات التطبيق كلها (database + license + public + backups)
+  // في مجلد المشروع D:\CaptainPOS — ولو مش موجودة (جهاز تاني) نرجع لبيانات المستخدم
+  const home = process.env.CAPTAIN_HOME || 'D:\\CaptainPOS';
+  try {
+    if (fs.existsSync(path.join(home, 'package.json'))) return home;
+  } catch {}
+  return app.getPath('userData');
+}
+
 function startServer() {
   const isDev = !app.isPackaged;
   // app.getAppPath() يعمل في الحالتين: مجلد المشروع (تطوير) أو app.asar (مجمّعة)
   const serverFile = path.join(app.getAppPath(), 'dist', 'server.cjs');
-  const projectDir = isDev ? path.join(__dirname, '..') : app.getPath('userData');
+  const projectDir = resolveProjectDir(isDev);
 
   if (!fs.existsSync(serverFile)) {
     throw new Error(`ملف السيرفر غير موجود:\n${serverFile}`);
