@@ -24,9 +24,10 @@ interface SalesInvoiceProps {
   currentUser: LoggedUser | null;
   tamweenCustomer?: any;
   onClearTamweenCustomer?: () => void;
+  onNavigateToTab?: (tab: string) => void;
 }
 
-export default function SalesInvoice({ currentUser, tamweenCustomer, onClearTamweenCustomer }: SalesInvoiceProps) {
+export default function SalesInvoice({ currentUser, tamweenCustomer, onClearTamweenCustomer, onNavigateToTab }: SalesInvoiceProps) {
   const [invoiceNumber, setInvoiceNumber] = useState("");
   const [date, setDate] = useState("");
   const [customerName, setCustomerName] = useState("");
@@ -1505,6 +1506,14 @@ if (true) {
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => onNavigateToTab?.("accounts")}
+            className="h-6 px-2.5 flex items-center justify-center gap-1.5 bg-[#065f46] hover:bg-[#047857] text-white font-bold text-xs border border-[#065f46] transition-colors cursor-pointer"
+          >
+            <Wallet size={13} />
+            <span>حسابات وديون</span>
+          </button>
           <button
             type="button"
             onClick={loadInvoiceHistory}

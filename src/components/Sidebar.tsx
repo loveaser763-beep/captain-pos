@@ -14,7 +14,8 @@ import {
   Cpu,
   Terminal,
   FileText,
-  CreditCard
+  CreditCard,
+  Wallet
 } from "lucide-react";
 import { User } from "../types";
 import ThemeSwitcher from "./ThemeSwitcher";
@@ -33,6 +34,7 @@ const tabColors: Record<string, string> = {
   sales: "from-emerald-500 to-teal-700",
   purchases: "from-orange-500 to-red-600",
   invoices_register: "from-blue-500 to-indigo-600",
+  accounts: "from-emerald-600 to-green-800",
   items: "from-violet-500 to-purple-700",
   inventory_audit: "from-amber-500 to-orange-600",
   suppliers: "from-pink-500 to-rose-700",
@@ -74,6 +76,7 @@ export default function Sidebar({
     { id: "items", label: "إدارة الأصناف", description: "إضافة وتعديل الأصناف", icon: Package, permission: "items" },
     { id: "purchases", label: "فاتورة مشتريات", description: "تسجيل فواتير المشتريات", icon: TrendingDown, permission: "purchases" },
     { id: "invoices_register", label: "سجل الفواتير", description: "عرض جميع الفواتير", icon: FileText, permission: "reports" },
+    { id: "accounts", label: "حسابات الزبائن", description: "الديون والآجل والبطاقات", icon: Wallet, permission: "accounts" },
     { id: "logs", label: "سجل العمليات", description: "سجل النشاط والتغييرات", icon: ClipboardList, permission: "reports" },
     { id: "reports", label: "التقارير المحاسبية", description: "تقارير مالية ومحاسبية", icon: BarChart3, permission: "reports" },
     { id: "treasury", label: "اللوحة المالية", description: "الخزينة والحسابات", icon: Banknote, permission: "admin" },

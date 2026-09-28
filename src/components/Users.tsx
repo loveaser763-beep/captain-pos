@@ -32,6 +32,7 @@ export default function UsersManagement({ currentUser }: UsersProps) {
     { id: "items", label: "إدارة الأصناف المخزنية والأسعار" },
     { id: "suppliers", label: "إدارة الموردين والجهات" },
     { id: "reports", label: "سحب التقارير والأرباح" },
+    { id: "accounts", label: "حسابات الزبائن والديون والتسديد" },
     { id: "users", label: "التحكم في مستخدمي النظام وصلاحياتهم" },
     { id: "dashboard_stats", label: "رؤية الأرقام والإحصائيات المالية بالشاشة الرئيسية" },
     { id: "view_purchases_invoices", label: "عرض فواتير المشتريات بالشاشة الرئيسية" },

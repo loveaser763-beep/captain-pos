@@ -21,6 +21,7 @@ import { isLoggedIn, authFetch, clearAuthToken, getAuthToken, hardRefocus } from
 import LicenseScreen from "./components/LicenseScreen";
 
 import InvoicesRegister from "./components/InvoicesRegister";
+import Accounts from "./components/Accounts";
 import LangIndicator from "./components/LangIndicator";
 import TamweenCustomers from "./components/TamweenCustomers";
 import TamweenReport from "./components/TamweenReport";
@@ -139,6 +140,7 @@ export default function App() {
     sales: "printable-sales",
     purchases: "purchase-invoice-view",
     invoices_register: "printable-invoices",
+    accounts: "printable-accounts",
     items: "printable-items",
     inventory_audit: "printable-audit",
     suppliers: "printable-suppliers",
@@ -155,11 +157,22 @@ export default function App() {
       case "dashboard":
         return <Dashboard currentUser={currentUser} onNavigateToTab={(tab) => setActiveTab(tab)} />;
       case "sales":
-        return <SalesInvoice currentUser={currentUser} tamweenCustomer={tamweenCustomerForSale} onClearTamweenCustomer={() => setTamweenCustomerForSale(null)} />;
+        return <SalesInvoice currentUser={currentUser} tamweenCustomer={tamweenCustomerForSale} onClearTamweenCustomer={() => setTamweenCustomerForSale(null)} onNavigateToTab={(tab) => setActiveTab(tab)} />;
       case "purchases":
         return <PurchaseInvoice currentUser={currentUser} />;
       case "invoices_register":
         return <InvoicesRegister currentUser={currentUser} />;
+      case "accounts":
+        return (
+          <Accounts
+            currentUser={currentUser}
+            onNavigateToTab={(tab) => setActiveTab(tab)}
+            onWithdrawNow={(customer) => {
+              setTamweenCustomerForSale(customer);
+              setActiveTab("sales");
+            }}
+          />
+        );
       case "items":
         return <Products currentUser={currentUser} />;
       case "inventory_audit":

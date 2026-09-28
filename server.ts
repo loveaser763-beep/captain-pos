@@ -289,6 +289,20 @@ async function startServer() {
     )
   `);
 
+  // دفتر حسابات الزبائن (رصيد افتتاحي + سداد الدفتر القديم)
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS customer_ledger (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tamween_customer_id INTEGER,
+      customer_name TEXT,
+      type TEXT,
+      amount REAL,
+      note TEXT DEFAULT '',
+      created_by TEXT DEFAULT '',
+      created_at TEXT
+    )
+  `);
+
   try {
     await dbRun("ALTER TABLE expenses ADD COLUMN payment_source TEXT DEFAULT 'cash_register'");
   } catch (e) {
@@ -4295,6 +4309,215 @@ async function startServer() {
         `تحصيل ${pay.toFixed(2)} ج.م من فاتورة آجلة ${inv.invoice_number} للعميل ${inv.customer_supplier_name || "—"} — المتبقي بعد التحصيل: ${newRemaining.toFixed(2)} ج.م`
       ]);
       res.json({ success: true, remaining: newRemaining, paid: newPaid });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ==================== حسابات الزبائن والديون ====================
+  // كشف حساب موحّد: فواتير الآجل المفتوحة + الدفتر القديم + أرصدة البطاقات
+  app.get("/api/accounts", async (req, res) => {
+    try {
+      const invoices = await dbAll(
+        `SELECT id, invoice_number, date, customer_supplier_name, tamween_customer_id, secret_number,
+                total, paid, remaining, payment_method, created_by
+         FROM invoices
+         WHERE type = 'sales' AND remaining != 0 AND (status IS NULL OR status != 'returned')
+         ORDER BY date DESC, id DESC`
+      );
+      const ledger = await dbAll("SELECT * FROM customer_ledger ORDER BY id DESC");
+      const tamween = await dbAll(
+        `SELECT id, name, secret_number, phone, card_value, bread_points, status, status_month
+         FROM tamween_customers ORDER BY name COLLATE NOCASE`
+      );
+
+      const accounts: any[] = [];
+      const byTid = new Map<number, any>();
+      const byName = new Map<string, any>();
+      const norm = (s: any) => String(s || "").trim();
+
+      const ensure = (tid: number | null, name: string, secret: string, phone: string) => {
+        if (tid != null) {
+          const hit = byTid.get(tid);
+          if (hit) return hit;
+        }
+        const nm = norm(name);
+        if (nm) {
+          const hit = byName.get(nm);
+          if (hit) {
+            if (tid != null && !hit.tamween_customer_id) {
+              hit.tamween_customer_id = tid;
+              byTid.set(tid, hit);
+            }
+            return hit;
+          }
+        }
+        const acc = {
+          key: tid != null ? `t:${tid}` : `n:${nm || "?"}${accounts.length}`,
+          name: nm || (tid != null ? `زبون #${tid}` : "بدون اسم"),
+          tamween_customer_id: tid,
+          secret_number: norm(secret),
+          phone: norm(phone),
+          card_value: 0,
+          bread_points: 0,
+          status: "",
+          status_month: "",
+          invoices: [] as any[],
+          ledger_entries: [] as any[],
+          invoice_debt: 0,
+          invoice_credit: 0,
+          ledger_net: 0,
+          last_activity: "",
+        };
+        accounts.push(acc);
+        if (tid != null) byTid.set(tid, acc);
+        if (nm) byName.set(nm, acc);
+        return acc;
+      };
+
+      // 1) زبائن التموين (ببطاقة أو بدون)
+      for (const c of tamween) {
+        const acc = ensure(c.id, c.name, c.secret_number, c.phone);
+        acc.card_value = Number(c.card_value || 0);
+        acc.bread_points = Number(c.bread_points || 0);
+        acc.status = c.status || "";
+        acc.status_month = c.status_month || "";
+        acc.secret_number = norm(c.secret_number) || acc.secret_number;
+        acc.phone = norm(c.phone) || acc.phone;
+        acc.name = norm(c.name) || acc.name;
+      }
+
+      // 2) فواتير الآجل المفتوحة
+      for (const inv of invoices) {
+        const acc = ensure(inv.tamween_customer_id ?? null, inv.customer_supplier_name, inv.secret_number, "");
+        acc.invoices.push(inv);
+        const rem = Number(inv.remaining || 0);
+        if (rem > 0) acc.invoice_debt += rem;
+        else acc.invoice_credit += -rem;
+        if (!acc.last_activity || String(inv.date) > acc.last_activity) acc.last_activity = String(inv.date || "");
+      }
+
+      // 3) الدفتر القديم
+      for (const e of ledger) {
+        const acc = ensure(e.tamween_customer_id ?? null, e.customer_name, "", "");
+        acc.ledger_entries.push(e);
+        const amt = Number(e.amount || 0);
+        if (e.type === "opening_debit") acc.ledger_net += amt;
+        else acc.ledger_net -= amt; // opening_credit أو payment
+        const d = String(e.created_at || "").slice(0, 10);
+        if (!acc.last_activity || d > acc.last_activity) acc.last_activity = d;
+      }
+
+      // الرصيد الكلي: > 0 الزبون ليّا عليه، < 0 فلوس عندي أنا لصالحه
+      const rows = accounts.map((a) => ({
+        ...a,
+        invoices: undefined,
+        ledger_entries: undefined,
+        open_invoices: a.invoices,
+        ledger: a.ledger_entries,
+        invoice_debt: a.invoice_debt,
+        invoice_credit: a.invoice_credit,
+        ledger_net: a.ledger_net,
+        balance: a.invoice_debt - a.invoice_credit + a.ledger_net,
+      }));
+
+      let total_debt = 0, total_credit = 0, total_card = 0, debtors = 0, later = 0;
+      const currentMonth = new Date().toISOString().slice(0, 7);
+      for (const r of rows) {
+        if (r.balance > 0) { total_debt += r.balance; debtors++; }
+        else if (r.balance < 0) total_credit += -r.balance;
+        if (r.card_value > 0) total_card += r.card_value;
+        if (r.status === "later" && r.status_month === currentMonth) later++;
+      }
+      res.json({
+        accounts: rows,
+        summary: {
+          total_debt: +total_debt.toFixed(2),
+          total_credit: +total_credit.toFixed(2),
+          total_card: +total_card.toFixed(2),
+          debtors,
+          later,
+          count: rows.length,
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // تسجيل حركة في دفتر الحسابات (رصيد افتتاحي / سداد الدفتر القديم)
+  app.post("/api/accounts/ledger", async (req, res) => {
+    try {
+      const { tamween_customer_id, customer_name, type, amount, note, user_name } = req.body;
+      const normName = (s: any) => String(s || "").trim();
+      const amt = Number(amount);
+      if (!["opening_debit", "opening_credit", "payment"].includes(type)) {
+        return res.status(400).json({ error: "نوع حركة الدفتر غير صحيح" });
+      }
+      if (!(amt > 0)) return res.status(400).json({ error: "لازم تكتب مبلغ أكبر من صفر" });
+
+      let name = normName(customer_name);
+      if (tamween_customer_id != null) {
+        const c = await dbGet("SELECT id, name FROM tamween_customers WHERE id = ?", [tamween_customer_id]);
+        if (!c) return res.status(404).json({ error: "الزبون غير موجود" });
+        name = String(c.name || "").trim();
+      }
+      if (!name) return res.status(400).json({ error: "لازم تختار الزبون" });
+
+      // سداد على الدفتر: ميقدرش يزيد عن رصيد الدفتر
+      if (type === "payment") {
+        const rows = await dbAll(
+          "SELECT type, amount, tamween_customer_id, customer_name FROM customer_ledger WHERE (tamween_customer_id IS NOT NULL AND tamween_customer_id = ?) OR (tamween_customer_id IS NULL AND TRIM(COALESCE(customer_name,'')) = ?)",
+          [tamween_customer_id ?? -1, name]
+        );
+        let net = 0;
+        for (const r of rows) net += r.type === "opening_debit" ? Number(r.amount || 0) : -Number(r.amount || 0);
+        if (amt > net + 0.001) {
+          return res.status(400).json({ error: `المبلغ أكبر من رصيد الدفتر (${net.toFixed(2)} جنيه)` });
+        }
+      }
+
+      await dbRun(
+        "INSERT INTO customer_ledger (tamween_customer_id, customer_name, type, amount, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [tamween_customer_id ?? null, name, type, amt, String(note || ""), user_name || "النظام", new Date().toISOString()]
+      );
+      const label =
+        type === "opening_debit" ? "رصيد افتتاحي (دين قديم)"
+        : type === "opening_credit" ? "رصيد افتتاحي (فلوس معي عنده)"
+        : "سداد على الدفتر القديم";
+      await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, ?, ?)", [
+        new Date().toISOString(),
+        user_name || "النظام",
+        "حركة حساب زبون",
+        `${label}: ${amt.toFixed(2)} جنيه — ${name}${note ? ` — ملاحظة: ${note}` : ""}`,
+      ]);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // زيادة/خصم رصيد بطاقة الزبون (ضرب بطاقة / تصحيح)
+  app.post("/api/accounts/card-adjust", async (req, res) => {
+    try {
+      const { customer_id, delta, user_name, note } = req.body;
+      const d = Number(delta);
+      if (!d) return res.status(400).json({ error: "لازم تكتب مبلغ غير صفر" });
+      const c = await dbGet("SELECT id, name, card_value FROM tamween_customers WHERE id = ?", [customer_id]);
+      if (!c) return res.status(404).json({ error: "الزبون غير موجود" });
+      const current = Number(c.card_value || 0);
+      const next = current + d;
+      if (next < -0.001) {
+        return res.status(400).json({ error: `رصيد البطاقة مش هيوصل للسالب (المتاح ${current.toFixed(2)} جنيه)` });
+      }
+      await dbRun("UPDATE tamween_customers SET card_value = ? WHERE id = ?", [+next.toFixed(2), customer_id]);
+      await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, ?, ?)", [
+        new Date().toISOString(),
+        user_name || "النظام",
+        d > 0 ? "زيادة رصيد بطاقة" : "خصم رصيد بطاقة",
+        `${c.name}: ${d > 0 ? "+" : ""}${d.toFixed(2)} جنيه (الرصيد ${current.toFixed(2)} ← ${next.toFixed(2)})${note ? ` — ملاحظة: ${note}` : ""}`,
+      ]);
+      res.json({ success: true, card_value: +next.toFixed(2) });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
