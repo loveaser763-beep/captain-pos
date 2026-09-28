@@ -7,7 +7,7 @@ echo   D -^> G -^> GitHub -^> SnapDeploy
 echo ============================================
 echo.
 echo [1/4] Syncing code from D to G...
-robocopy "D:\CaptainPOS" "G:\نسخه العميل" /E /XO /XD "D:\CaptainPOS\node_modules" "D:\CaptainPOS\release" "D:\CaptainPOS\dist" "D:\CaptainPOS\backups" "D:\CaptainPOS\uploads" "D:\CaptainPOS\.git" "D:\CaptainPOS\New folder" "D:\CaptainPOS\public\zesty-data" "D:\CaptainPOS\public\jameety-data" "D:\CaptainPOS\src\components\jameety\data" /XF database.sqlite database.sqlite-shm database.sqlite-wal *.log /NFL /NDL /NJH /NJS
+robocopy "D:\CaptainPOS" "G:\نسخه العميل" /E /XO /XD "D:\CaptainPOS\node_modules" "D:\CaptainPOS\release" "D:\CaptainPOS\dist" "D:\CaptainPOS\backups" "D:\CaptainPOS\uploads" "D:\CaptainPOS\.git" "D:\CaptainPOS\New folder" /XF database.sqlite database.sqlite-shm database.sqlite-wal *.log /NFL /NDL /NJH /NJS
 echo       - Done!
 echo.
 echo [2/4] Building installer...

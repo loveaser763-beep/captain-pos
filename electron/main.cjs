@@ -123,6 +123,8 @@ function createWindow() {
     show: false,
     autoHideMenuBar: true,
     frame: true,
+    // منع زر التكبير/الاستعادة (زر المربع الصغير) — الشاشة بتفتح ملء الشاشة والخروج بـ F11
+    maximizable: false,
     titleBarStyle: 'hidden',
     titleBarOverlay: false,
     webPreferences: {
@@ -136,6 +138,8 @@ function createWindow() {
   mainWindow.maximize();
 
   mainWindow.once('ready-to-show', () => {
+    // البرنامج يفتح ملء الشاشة كاملة (الخروج للويندوز عبر F11)
+    try { mainWindow.setFullScreen(true); } catch {}
     setTimeout(() => {
       mainWindow.show();
       mainWindow.focus();
@@ -160,6 +164,11 @@ function createWindow() {
     return { action: 'deny' };
   });
 
+  const zoomIn = () => { if (mainWindow) { const z = mainWindow.webContents.getZoomLevel(); mainWindow.webContents.setZoomLevel(z + 0.5); } };
+  const zoomOut = () => { if (mainWindow) { const z = mainWindow.webContents.getZoomLevel(); mainWindow.webContents.setZoomLevel(z - 0.5); } };
+  const zoomReset = () => { if (mainWindow) mainWindow.webContents.setZoomLevel(0); };
+  const toggleFullScreen = () => { if (mainWindow) mainWindow.setFullScreen(!mainWindow.isFullScreen()); };
+
   const menuTemplate = [
     {
       label: 'File',
@@ -179,16 +188,31 @@ function createWindow() {
           accelerator: 'F12',
           click: () => { if (mainWindow) mainWindow.webContents.toggleDevTools(); }
         },
+        {
+          label: 'Fullscreen',
+          accelerator: 'F11',
+          click: toggleFullScreen
+        },
         { type: 'separator' },
         {
           label: 'Zoom In',
           accelerator: 'CmdOrCtrl+=',
-          click: () => { if (mainWindow) { const z = mainWindow.webContents.getZoomLevel(); mainWindow.webContents.setZoomLevel(z + 0.5); } }
+          click: zoomIn
+        },
+        {
+          label: 'Zoom In',
+          accelerator: 'CmdOrCtrl+Shift+=',
+          click: zoomIn
         },
         {
           label: 'Zoom Out',
           accelerator: 'CmdOrCtrl+-',
-          click: () => { if (mainWindow) { const z = mainWindow.webContents.getZoomLevel(); mainWindow.webContents.setZoomLevel(z - 0.5); } }
+          click: zoomOut
+        },
+        {
+          label: 'Reset Zoom',
+          accelerator: 'CmdOrCtrl+0',
+          click: zoomReset
         },
         { type: 'separator' },
         { role: 'quit' }

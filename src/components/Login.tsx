@@ -4,7 +4,6 @@ import {
   User as UserIcon,
   AlertTriangle,
   ArrowLeft,
-  Cpu,
 } from "lucide-react";
 import { User } from "../types";
 import LangIndicator from "./LangIndicator";
@@ -86,12 +85,6 @@ export default function Login({ onLoginSuccess }: LoginProps) {
     setTimeout(() => document.getElementById("input-password")?.focus(), 0);
   };
 
-  const BrandMark = ({ size = 54 }: { size?: number }) => (
-    <div className="login-brand-mark" style={{ width: size, height: size }}>
-      <Cpu size={Math.round(size * 0.52)} strokeWidth={1.6} />
-    </div>
-  );
-
   return (
     <div
       className={`lux-scope relative min-h-screen flex items-center justify-center select-none font-sans overflow-hidden login-style-${styleKey}`}
@@ -112,6 +105,11 @@ export default function Login({ onLoginSuccess }: LoginProps) {
               <stop offset="55%" stopColor="#E4B95B" />
               <stop offset="100%" stopColor="#A9752A" />
             </linearGradient>
+            <linearGradient id="capTitleGold" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stopColor="#F7E3A1" />
+              <stop offset="50%" stopColor="#E4B95B" />
+              <stop offset="100%" stopColor="#C08D31" />
+            </linearGradient>
             <filter id="capCrownGlow" x="-35%" y="-35%" width="170%" height="170%">
               <feGaussianBlur stdDeviation="5" result="b" />
               <feMerge>
@@ -119,9 +117,33 @@ export default function Login({ onLoginSuccess }: LoginProps) {
                 <feMergeNode in="SourceGraphic" />
               </feMerge>
             </filter>
+            <filter id="capTitleGlow" x="-25%" y="-60%" width="150%" height="220%">
+              <feGaussianBlur stdDeviation="7" result="b" />
+              <feMerge>
+                <feMergeNode in="b" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
           </defs>
 
-          {/* شبكة الشبكة + العُقد */}
+          {/* اسم المنظومة فوق التاج */}
+          <text
+            x="683"
+            y="92"
+            textAnchor="middle"
+            fill="url(#capTitleGold)"
+            filter="url(#capTitleGlow)"
+            style={{
+              fontFamily: '"Cairo", "Segoe UI", Tahoma, sans-serif',
+              fontSize: "58px",
+              fontWeight: 900,
+              letterSpacing: "3px",
+            }}
+          >
+            منظومة الكابتن
+          </text>
+
+          {/* الشبكة + العُقد */}
           <g stroke="url(#capGold4b)" strokeWidth="1.3" fill="none" opacity="0.45">
             <path d="M50,640 L300,470 L520,540 L683,436 L880,510 L1080,420 L1316,580" />
             <path d="M100,340 L340,450 L540,340 L683,436 L840,310 L1040,400 L1266,310" />
@@ -164,26 +186,29 @@ export default function Login({ onLoginSuccess }: LoginProps) {
             <rect x="1180" y="600" width="17" height="98" rx="8" />
             <rect x="1212" y="648" width="17" height="50" rx="8" />
           </g>
+
+          {/* الشعار الفرعي تحت التاج والخطوط */}
+          <text
+            x="683"
+            y="676"
+            textAnchor="middle"
+            fill="#E4C98A"
+            style={{
+              fontFamily: '"Cairo", "Segoe UI", Tahoma, sans-serif',
+              fontSize: "24px",
+              fontWeight: 700,
+              letterSpacing: "5px",
+            }}
+          >
+            لهندسة الأرقام وريادة الأعمال
+          </text>
         </svg>
         <div className="login-3d__scrim" />
       </div>
 
-      {/* ============ الهوية — في الزاوية المقابلة للوحة ============ */}
-      <div className="login-corner-brand">
-        <BrandMark size={38} />
-        <div className="leading-tight">
-          <div className="text-[14.5px] font-black tracking-[0.14em] text-[var(--text-primary)]">
-            منظومة الكابتن
-          </div>
-          <div className="mt-0.5 text-[10px] font-black tracking-[0.1em] text-[var(--text-secondary)]">
-            لهندسة الأرقام وريادة الأعمال
-          </div>
-        </div>
-      </div>
-
       {/* ============ لوحة الدخول الصغيرة ============ */}
       <div className="login-corner-panel" id="login-card">
-        <div className="login-panel-head mb-6">
+        <div className="login-panel-head mb-2.5">
           <h2>أهلًا بك من جديد</h2>
           <p>سجّل دخولك عشان تكمّل شغلك في التحكم بالمتجر والمبيعات.</p>
         </div>
@@ -200,7 +225,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-2.5">
           <div>
             <label htmlFor="input-username" className="lux-label">
               اسم المستخدم
@@ -257,10 +282,10 @@ export default function Login({ onLoginSuccess }: LoginProps) {
         </form>
 
         {/* حسابات التجربة السريعة */}
-        <div className="mt-6 border-t border-[var(--border)] pt-5" id="login-helper-accounts">
-          <div className="mb-3.5 flex items-center gap-3">
+        <div className="mt-2.5 border-t border-[var(--border)] pt-2.5" id="login-helper-accounts">
+          <div className="mb-2 flex items-center gap-3">
             <span className="h-px flex-1 bg-[var(--border)]" />
-            <span className="text-[10px] font-black tracking-[0.18em] text-[var(--text-muted)]">
+            <span className="text-[8.5px] font-black tracking-[0.18em] text-[var(--text-muted)]">
               دخول سريع
             </span>
             <span className="h-px flex-1 bg-[var(--border)]" />

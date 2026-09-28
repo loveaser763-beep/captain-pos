@@ -939,7 +939,7 @@ async function startServer() {
     ]);
   }
 
-  // Auto-seed DISABLED by owner - project starts empty except Jameety
+  // Auto-seed DISABLED by owner - the project starts empty (CaptainPOS only)
   // NOTE: default login users must still be created, otherwise nobody can log in.
 
   // Ensure default Users exist even when auto-seed is disabled
@@ -1026,84 +1026,6 @@ async function startServer() {
       res.json({ items: items.c, invoices: invoices.c });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
-    }
-  });
-
-  // ============================================
-  // API - IMPORT FROM JSON FILES
-  // ============================================
-  const DATA_PATH = path.join(_currentDir, 'src', 'components', 'jameety', 'data', 'ymarket');
-
-  app.post("/api/import-json", async (req, res) => {
-    try {
-      const fs = require('fs');
-      const results: any = { items: 0, invoices: 0, invoice_items: 0, suppliers: 0, users: 0, partners: 0, expenses: 0 };
-
-      // Helper to read JSON file
-      const readJson = (filePath: string) => {
-        try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch { return []; }
-      };
-
-      // Import Items
-      const items = readJson(path.join(DATA_PATH, 'items', 'ymarket_items.json'));
-      for (const i of items) {
-        try {
-          await dbRun(`INSERT OR REPLACE INTO items (id, barcode, name, purchase_price, retail_price, wholesale_price, quantity, unit, low_stock_limit, is_unlimited) VALUES (?,?,?,?,?,?,?,?,?,?)`,
-            [i.id, i.barcode, i.name, i.purchase_price, i.retail_price, i.wholesale_price, i.quantity, i.unit, i.low_stock_limit, i.is_unlimited || 0]);
-          results.items++;
-        } catch {}
-      }
-
-      // Import Suppliers
-      const suppliers = readJson(path.join(DATA_PATH, 'suppliers', 'ymarket_suppliers.json'));
-      for (const s of suppliers) {
-        try { await dbRun(`INSERT OR REPLACE INTO suppliers (id, name, phone, address) VALUES (?,?,?,?)`, [s.id, s.name, s.phone, s.address]); results.suppliers++; } catch {}
-      }
-
-      // Import Invoices
-      const invoices = readJson(path.join(DATA_PATH, 'invoices', 'ymarket_invoices.json'));
-      for (const inv of invoices) {
-        try {
-          await dbRun(`INSERT OR REPLACE INTO invoices (id, invoice_number, type, date, customer_supplier_name, payment_source, sale_type, subtotal, tax, discount, total, paid, remaining, created_by, created_at, status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-            [inv.id, inv.invoice_number, inv.type, inv.date, inv.customer_supplier_name, inv.payment_source, inv.sale_type, inv.subtotal, inv.tax, inv.discount, inv.total, inv.paid, inv.remaining, inv.created_by, inv.created_at, inv.status || 'active']);
-          results.invoices++;
-        } catch {}
-      }
-
-      // Import Invoice Items
-      const invoiceItems = readJson(path.join(DATA_PATH, 'invoices', 'ymarket_invoice_items.json'));
-      for (const ii of invoiceItems) {
-        try { await dbRun(`INSERT OR REPLACE INTO invoice_items (id, invoice_id, barcode, name, quantity, unit, price, cost_price, total, returned_quantity) VALUES (?,?,?,?,?,?,?,?,?,?)`, [ii.id, ii.invoice_id, ii.barcode, ii.name, ii.quantity, ii.unit, ii.price, ii.cost_price, ii.total, ii.returned_quantity || 0]); results.invoice_items++; } catch {}
-      }
-
-      // Import Users
-      const users = readJson(path.join(DATA_PATH, 'users', 'ymarket_users.json'));
-      for (const u of users) {
-        try { await dbRun(`INSERT OR REPLACE INTO users (id, username, password, name, role, permissions) VALUES (?,?,?,?,?,?)`, [u.id, u.username, u.password, u.name, u.role, JSON.stringify(u.permissions)]); results.users++; } catch {}
-      }
-
-      // Import Partners
-      const partners = readJson(path.join(DATA_PATH, 'partners', 'ymarket_partners.json'));
-      for (const p of partners) {
-        try { await dbRun(`INSERT OR REPLACE INTO partners (id, name, fixed_profit_percentage, purchase_percentage) VALUES (?,?,?,?)`, [p.id, p.name, p.fixed_profit_percentage, p.purchase_percentage]); results.partners++; } catch {}
-      }
-
-      // Import Expenses
-      const expenses = readJson(path.join(DATA_PATH, 'expenses', 'ymarket_expenses.json'));
-      for (const e of expenses) {
-        try { await dbRun(`INSERT OR REPLACE INTO expenses (id, title, amount, date, category, notes) VALUES (?,?,?,?,?,?)`, [e.id, e.title, e.amount, e.date, e.category, e.notes]); results.expenses++; } catch {}
-      }
-
-      console.log('✅ Import from JSON completed:', results);
-      await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, 'استيراد JSON', ?)", [
-        new Date().toISOString(),
-        "النظام",
-        `تم استيراد: ${results.items} منتج, ${results.invoices} فاتورة, ${results.suppliers} مورد, ${results.users} مستخدم`
-      ]);
-      res.json({ success: true, results });
-    } catch (err: any) {
-      console.error('Import error:', err);
-      res.status(500).json({ success: false, error: err.message });
     }
   });
 
@@ -1228,7 +1150,10 @@ async function startServer() {
   app.get("/api/users", requireAuth, requireAdmin, async (req, res) => {
     try {
       const usersList = await dbAll("SELECT id, username, name, role, permissions FROM users");
-      const sanitized = usersList.map(u => ({ ...u, permissions: JSON.parse(u.permissions || "[]") }));
+      // حساب المبرمج مخفي عن أي حساب غير حساب المبرمج نفسه
+      const sanitized = usersList
+        .filter((u: any) => u.role !== "developer" || (req as any).user?.role === "developer")
+        .map(u => ({ ...u, permissions: JSON.parse(u.permissions || "[]") }));
       res.json(sanitized);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -3453,78 +3378,6 @@ async function startServer() {
       try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
       try { if (req.file) { fs.unlinkSync(req.file.path); fs.unlinkSync(req.file.path + ".zip"); } } catch {}
       res.status(500).json({ success: false, error: err.message || "فشلت الاستعادة" });
-    }
-  });
-
-  
-  // ============================================
-  // JAMEETY/ZESTY DISK STORE (browser-independent persistence)
-  // ============================================
-  await dbRun(`
-    CREATE TABLE IF NOT EXISTS jameety_kv (
-      ns TEXT,
-      key TEXT,
-      value TEXT,
-      updated_at TEXT,
-      PRIMARY KEY (ns, key)
-    )
-  `);
-
-  // Pull: whole namespace
-  app.get("/api/jameety-kv", async (req, res) => {
-    try {
-      const ns = String((req.query as any).ns || "jameety");
-      if (ns !== "jameety" && ns !== "zesty") return res.status(400).json({ error: "نطاق غير صالح" });
-      const rows = await dbAll("SELECT key, value FROM jameety_kv WHERE ns = ?", [ns]);
-      const data: Record<string, string> = {};
-      for (const r of rows) data[r.key] = r.value;
-      res.json({ success: true, count: rows.length, data });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  // Push: upsert namespace entries
-  app.post("/api/jameety-kv", async (req, res) => {
-    try {
-      const { ns, entries } = req.body as { ns: string; entries: Record<string, string> };
-      if ((ns !== "jameety" && ns !== "zesty") || !entries || typeof entries !== "object") {
-        return res.status(400).json({ error: "بيانات غير صالحة" });
-      }
-      const now = new Date().toISOString();
-      let count = 0;
-      for (const [k, v] of Object.entries(entries)) {
-        if (typeof v !== "string") continue;
-        await dbRun("INSERT INTO jameety_kv (ns, key, value, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(ns, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at", [ns, k, v, now]);
-        count++;
-      }
-      res.json({ success: true, count });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  // Delete keys (decontamination)
-  app.post("/api/jameety-kv/delete", async (req, res) => {
-    try {
-      const { ns, keys } = req.body as { ns: string; keys: string[] };
-      if ((ns !== "jameety" && ns !== "zesty") || !Array.isArray(keys)) {
-        return res.status(400).json({ error: "بيانات غير صالحة" });
-      }
-      let count = 0;
-      for (const k of keys) {
-        if (typeof k !== "string") continue;
-        await dbRun("DELETE FROM jameety_kv WHERE ns = ? AND key = ?", [ns, k]);
-        count++;
-      }
-      await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, 'حذف بيانات جامعتي/زيستي', ?)", [
-        new Date().toISOString(),
-        "النظام",
-        `حذف ${count} مفتاح من ${ns}`
-      ]);
-      res.json({ success: true, count });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
     }
   });
 

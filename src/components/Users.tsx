@@ -205,6 +205,7 @@ export default function UsersManagement({ currentUser }: UsersProps) {
       ) : (
         <div className="grid grid-cols-12 gap-4" id="users-grid">
           {users
+            .filter((u) => u.role !== "developer" || currentUser?.role === "developer")
             .map((u) => (
             <div
               key={u.id}

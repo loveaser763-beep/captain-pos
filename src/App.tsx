@@ -14,7 +14,7 @@ import Settings from "./components/Settings";
 import Treasury from "./components/Treasury";
 import InventoryAudit from "./components/InventoryAudit";
 import DeveloperPanel from "./components/DeveloperPanel";
-import { Menu, PanelLeftClose, PanelLeftOpen, Minus, Square, X } from "lucide-react";
+import { Menu, PanelLeftClose, PanelLeftOpen, Minus, X } from "lucide-react";
 import UnifiedPrintButton from "./components/UnifiedPrintButton";
 import { applyTheme, getSavedTheme } from "./components/ThemeSwitcher";
 import { isLoggedIn, authFetch, clearAuthToken, getAuthToken, hardRefocus } from "./authFetch";
@@ -247,7 +247,7 @@ export default function App() {
       <div className="flex-1 flex flex-col h-full min-w-0 max-w-full overflow-hidden" id="app-main-viewport">
 
         {/* Top Control Bar - صف واحد مضغوط */}
-        <div ref={topBarRef} className="bg-[var(--bg-card)] flex flex-col border-b border-[var(--border)] shrink-0 z-30 min-w-0" id="top-enterprise-bar" style={{ WebkitAppRegion: 'drag' } as any}>
+        <div ref={topBarRef} className="bg-[var(--bg-deep)] flex flex-col shrink-0 z-30 min-w-0" id="top-enterprise-bar" style={{ WebkitAppRegion: 'drag' } as any}>
           <div className="flex justify-between items-center px-2.5 sm:px-3 py-1.5 gap-2">
             <div className="flex items-center gap-2 min-w-0">
               {/* زر القائمة - أقصى اليمين فيزيائيا تحت أزرار الويندوز */}
@@ -286,7 +286,6 @@ export default function App() {
               <div className="w-px h-4 bg-[var(--border)] shrink-0" />
               <div className="flex items-center gap-0.5" style={{ WebkitAppRegion: 'no-drag' } as any}>
                 <button onClick={() => (window as any).electronAPI?.minimize()} className="w-6 h-6 flex items-center justify-center hover:bg-[var(--bg-input)] lux-bar-muted transition-colors cursor-pointer" title="تصغير"><Minus size={12} /></button>
-                <button onClick={() => (window as any).electronAPI?.maximize()} className="w-6 h-6 flex items-center justify-center hover:bg-[var(--bg-input)] lux-bar-muted transition-colors cursor-pointer" title="تكبير/استعادة"><Square size={11} /></button>
                 <button onClick={() => (window as any).electronAPI?.close()} className="w-6 h-6 flex items-center justify-center hover:bg-[var(--danger)] hover:text-white lux-bar-muted transition-colors cursor-pointer" title="إغلاق"><X size={12} /></button>
               </div>
             </div>
