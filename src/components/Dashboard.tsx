@@ -50,6 +50,57 @@ export default function Dashboard({ onNavigateToTab, currentUser }: DashboardPro
   const [loadingReturnDetails, setLoadingReturnDetails] = useState(false);
   const [returnType, setReturnType] = useState<"full" | "partial">("partial");
 
+  // التقفيله الشهريه
+  const [closeMonth, setCloseMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [close, setClose] = useState<any>(null);
+  const [closeLoading, setCloseLoading] = useState(false);
+  const [carryInput, setCarryInput] = useState("");
+  const [carrySaving, setCarrySaving] = useState(false);
+  const [closeMsg, setCloseMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  const fetchMonthlyClose = async (m: string) => {
+    setCloseLoading(true);
+    setCloseMsg(null);
+    try {
+      const res = await authFetch(`/api/monthly-close?month=${encodeURIComponent(m)}`);
+      if (!res.ok) throw new Error("فشل جلب التقفيله");
+      const d = await res.json();
+      setClose(d);
+      setCarryInput(String(Number(d.carry_forward || 0)));
+    } catch (e: any) {
+      setClose(null);
+      setCloseMsg({ kind: "err", text: e.message || "مش قادرين نجيب بيانات الشهر" });
+    } finally {
+      setCloseLoading(false);
+    }
+  };
+
+  const saveCarry = async () => {
+    if (!close) return;
+    setCarrySaving(true);
+    setCloseMsg(null);
+    try {
+      const res = await authFetch("/api/monthly-close", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          month: close.month,
+          carry_forward: Number(carryInput) || 0,
+          user_name: currentUser?.name || "النظام",
+        }),
+      });
+      const d = await res.json();
+      if (!res.ok || d.error) throw new Error(d.error || "فشل الحفظ");
+      setCloseMsg({ kind: "ok", text: "اتحفظت المسبوقات ✅" });
+      await fetchMonthlyClose(close.month);
+      setTimeout(() => setCloseMsg(null), 2500);
+    } catch (e: any) {
+      setCloseMsg({ kind: "err", text: e.message || "فشل الحفظ" });
+    } finally {
+      setCarrySaving(false);
+    }
+  };
+
   useEffect(() => {
     if (returnInvoice) {
       setLoadingReturnDetails(true);
@@ -141,6 +192,11 @@ export default function Dashboard({ onNavigateToTab, currentUser }: DashboardPro
   useEffect(() => {
     fetchStats();
   }, []);
+
+  useEffect(() => {
+    fetchMonthlyClose(closeMonth);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [closeMonth]);
 
   useEffect(() => {
     if (successMsg) {
@@ -344,6 +400,7 @@ export default function Dashboard({ onNavigateToTab, currentUser }: DashboardPro
                       {(stats.sales?.total || 0).toFixed(2)} <span className="text-xs font-bold text-[var(--text-secondary)]">ج.م</span>
                     </h3>
                     <span className="text-xs text-[var(--text-secondary)] font-semibold block mt-1">{stats.sales?.count || 0} فواتير مسجلة</span>
+                    <span className="text-[11px] text-[var(--text-muted)] font-semibold block">مقبوض نقدًا: {(stats.sales?.cash || 0).toFixed(2)} ج.م</span>
                   </div>
                 </div>
               </div>
@@ -379,7 +436,7 @@ export default function Dashboard({ onNavigateToTab, currentUser }: DashboardPro
                     <h3 className="text-2xl font-black" style={{color: 'var(--accent)'}}>
                       {(stats.profit || 0).toFixed(2)} <span className="text-xs font-bold text-[var(--text-secondary)]">ج.م</span>
                     </h3>
-                    <span className="text-xs text-[var(--text-secondary)] font-semibold block mt-1">المكسب الأسبوعي الفعلي</span>
+                    <span className="text-xs text-[var(--text-secondary)] font-semibold block mt-1">هامش البضاعة + رسوم الخدمة (الحافز)</span>
                   </div>
                 </div>
               </div>
@@ -455,6 +512,134 @@ export default function Dashboard({ onNavigateToTab, currentUser }: DashboardPro
               </div>
             </div>
 
+          </div>
+
+          {/* التقفيله الشهريه — ميزانية شهرية واحدة */}
+          <div className="bg-[#c3c6bb] p-4 border border-[#222222]" id="monthly-close-box">
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-[#888888] pb-3 mb-3">
+              <div className="text-right">
+                <h3 className="text-sm font-extrabold text-[#000000]">التقفيله الشهريه</h3>
+                <p className="text-xs text-[#555555] font-semibold mt-0.5">
+                  الشهر الحالي مقابل الشهر السابق — كسبت ولا خسرت وسحبتك كام
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="month"
+                  value={closeMonth}
+                  onChange={(e) => setCloseMonth(e.target.value || new Date().toISOString().slice(0, 7))}
+                  className="h-9 px-2 bg-[#b8bcb2] border border-[#888888] text-xs font-black text-[#000000] cursor-pointer"
+                />
+                <button
+                  onClick={() => fetchMonthlyClose(closeMonth)}
+                  className="h-9 px-3 bg-[#222222] hover:bg-[#000000] text-[#c3c6bb] font-bold text-xs flex items-center gap-2 cursor-pointer"
+                >
+                  <RefreshCw size={15} strokeWidth={1.5} className={closeLoading ? "animate-spin" : ""} />
+                  <span>تحديث</span>
+                </button>
+              </div>
+            </div>
+
+            {closeMsg && (
+              <p
+                className={`text-xs font-black px-3 py-2 mb-3 border ${
+                  closeMsg.kind === "ok"
+                    ? "bg-[#b8bcb2] border-[#222222] text-[#000000]"
+                    : "bg-[#d9b8b8] border-[#7a2020] text-[#7a2020]"
+                }`}
+              >
+                {closeMsg.text}
+              </p>
+            )}
+
+            {!close ? (
+              <p className="py-8 text-center text-xs font-bold text-[#555555]">
+                {closeLoading ? "جاري حساب التقفيله..." : "مفيش بيانات للشهر ده"}
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {/* المربعات */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {(close.boxes || []).map((b: any) => (
+                    <div
+                      key={b.key}
+                      className="bg-[#b8bcb2] border border-[#888888] p-3 text-right"
+                      style={{ borderRight: `4px solid var(--${b.tone === "info" ? "primary" : b.tone})` }}
+                    >
+                      <p className="text-[11px] font-black text-[#555555] truncate">{b.label}</p>
+                      <p
+                        className="text-lg font-black font-mono leading-tight"
+                        style={{ color: Number(b.value) < 0 ? "#7a2020" : "#000000" }}
+                      >
+                        {Number(b.value).toFixed(2)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+
+                {/* إجماليات الشهر */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <div className="bg-[#b8bcb2] border border-[#888888] p-3 text-right">
+                    <p className="text-[11px] font-black text-[#555555]">إجمالي الشهر السابق ({close.prev_month})</p>
+                    <p className="text-lg font-black font-mono leading-tight text-[#000000]">{Number(close.prev_total || 0).toFixed(2)}</p>
+                  </div>
+                  <div className="bg-[#b8bcb2] border border-[#888888] p-3 text-right">
+                    <p className="text-[11px] font-black text-[#555555]">إجمالي الشهر الحالي ({close.month})</p>
+                    <p className="text-lg font-black font-mono leading-tight text-[#000000]">{Number(close.total || 0).toFixed(2)}</p>
+                  </div>
+                  <div className="bg-[#b8bcb2] border border-[#888888] p-3 text-right">
+                    <p className="text-[11px] font-black text-[#555555]">زيادة أو نقص عن الشهر السابق</p>
+                    <p
+                      className="text-lg font-black font-mono leading-tight"
+                      style={{ color: Number(close.delta) >= 0 ? "#166534" : "#7a2020" }}
+                    >
+                      {Number(close.delta || 0) >= 0 ? "+" : ""}
+                      {Number(close.delta || 0).toFixed(2)}
+                    </p>
+                  </div>
+                  <div className="bg-[#222222] text-[#c3c6bb] border border-[#222222] p-3 text-right">
+                    <p className="text-[11px] font-black opacity-80">صافي الربح الشهري</p>
+                    <p
+                      className="text-lg font-black font-mono leading-tight"
+                      style={{ color: Number(close.net_profit) >= 0 ? "#7dd3a0" : "#f0a0a0" }}
+                    >
+                      {Number(close.net_profit || 0).toFixed(2)} ج.م
+                    </p>
+                  </div>
+                </div>
+
+                {/* المسبوقات */}
+                <div className="bg-[#b8bcb2] border border-[#888888] p-3 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                  <div className="text-right">
+                    <p className="text-xs font-black text-[#000000]">المسبوقات</p>
+                    <p className="text-[11px] font-bold text-[#555555]">
+                      رصيد مُرحَّل من شهور قبل كده — يُضاف على الزيادة/النقص عشان يطلّع صافي الربح
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 w-full sm:w-auto">
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={carryInput}
+                      onChange={(e) => setCarryInput(e.target.value)}
+                      className="h-9 w-full sm:w-40 px-2 text-center font-mono font-black text-sm bg-[#c3c6bb] border border-[#888888] text-[#000000]"
+                    />
+                    <button
+                      onClick={saveCarry}
+                      disabled={carrySaving}
+                      className="h-9 px-4 bg-[#222222] hover:bg-[#000000] text-[#c3c6bb] font-bold text-xs cursor-pointer disabled:opacity-50"
+                    >
+                      {carrySaving ? "جاري الحفظ..." : "حفظ"}
+                    </button>
+                  </div>
+                </div>
+
+                <p className="text-[11px] font-bold text-[#555555] leading-relaxed">
+                  صافي الربح = المسبوقات ({Number(close.carry_forward || 0).toFixed(2)}) + الزيادة/النقص عن الشهر السابق (
+                  {Number(close.delta || 0).toFixed(2)}) = <b className="text-[#000000]">{Number(close.net_profit || 0).toFixed(2)} ج.م</b>
+                </p>
+              </div>
+            )}
           </div>
 
           {/* 12-COLUMN GRID: Chart & Top Selling Products */}

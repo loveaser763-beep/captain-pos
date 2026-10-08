@@ -12,6 +12,7 @@ import UsersManagement from "./components/Users";
 import Logs from "./components/Logs";
 import Settings from "./components/Settings";
 import Treasury from "./components/Treasury";
+import DrawerClose from "./components/DrawerClose";
 import InventoryAudit from "./components/InventoryAudit";
 import DeveloperPanel from "./components/DeveloperPanel";
 import { Menu, PanelLeftClose, PanelLeftOpen, Minus, X } from "lucide-react";
@@ -21,8 +22,12 @@ import { isLoggedIn, authFetch, clearAuthToken, getAuthToken, hardRefocus } from
 import LicenseScreen from "./components/LicenseScreen";
 
 import InvoicesRegister from "./components/InvoicesRegister";
-import Accounts from "./components/Accounts";
+import DebtsPage from "./components/DebtsPage";
 import LangIndicator from "./components/LangIndicator";
+
+// كنترول+R بيعيد تحميل الصفحة من غير ما البرنامج يقفل — العلامة بتتخزن على مستوى
+// الوحدة عشان متتجددش مع نفس التحميلة، والعملية الرئيسية هي اللي بتحدد fresh أم لا
+let freshStartCache: boolean | null = null;
 import TamweenCustomers from "./components/TamweenCustomers";
 import TamweenReport from "./components/TamweenReport";
 import TamweenReplacements from "./components/TamweenReplacements";
@@ -77,34 +82,56 @@ export default function App() {
     const savedTheme = getSavedTheme();
     applyTheme(savedTheme);
 
-    authFetch("/api/settings")
-      .then((res) => res.json())
-      .then((data) => {
-        const t = data?.theme || data?.ui_theme;
-        if (t) applyTheme(t as any);
-      })
-      .catch(() => {});
-
-    // Try Electron session first (disk), else validate token with server (no localStorage)
-    const api = (window as any).electronAPI;
-    if (api?.loadSession) {
-      api.loadSession().then((user: any) => {
-        if (user && user.id) {
-          if (getAuthToken()) {
-            setCurrentUser(user);
-            // تحقق صامت من صلاحية التوكن — لو منتهي: authFetch يمسح الجلسة ويرجّع شاشة الدخول
-            authFetch("/api/auth/me").catch(() => {});
-          } else {
-            // جلسة ديسك بدون توكن (بقايا باج تسجيل الدخول القديم) — خروج نظيف لشاشة الدخول
-            try { api.clearSession?.(); } catch {}
-          }
-        }
-      }).catch(() => {});
-    } else if (getAuthToken()) {
-      authFetch("/api/auth/me")
-        .then((res) => res.ok ? res.json() : null)
-        .then((data) => { if (data?.success && data.user?.id) setCurrentUser(data.user); })
+    // شاشة الدخول: مفيش توكن → بوابة الأمان في السيرفر هترجع 401 (إنذار كونسول بلا داعي)
+    // الثيم بيتقرا من getSavedTheme فوق، وهيتخلّص من السيرفر أول ما المستخدم يدخل فعليًا
+    if (isLoggedIn()) {
+      authFetch("/api/settings")
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          const t = data?.theme || data?.ui_theme;
+          if (t) applyTheme(t as any);
+        })
         .catch(() => {});
+    }
+
+    // كنترول+R (إعادة تحميل داخل نفس التشغيلة) → التوكن لسه موجود → نرجّع المستخدم
+    // من /api/auth.me. تشغيلة جديدة → شاشة الدخول (مفيش دخول تلقائي بقرار الكابتن).
+    const api = (window as any).electronAPI;
+    const restore = (fresh: boolean) => {
+      if (!fresh && getAuthToken()) {
+        authFetch("/api/auth/me")
+          .then((res) => (res.ok ? res.json() : null))
+          .then((data) => { if (data?.success && data.user?.id) setCurrentUser(data.user); })
+          .catch(() => {});
+        return;
+      }
+      if (api?.loadSession) {
+        api.loadSession().then((user: any) => {
+          if (user && user.id) {
+            if (getAuthToken()) {
+              setCurrentUser(user);
+              // تحقق صامت من صلاحية التوكن — لو منتهي: authFetch يمسح الجلسة ويرجّع شاشة الدخول
+              authFetch("/api/auth/me").catch(() => {});
+            } else {
+              // جلسة ديسك بدون توكن (بقايا باج تسجيل الدخول القديم) — خروج نظيف لشاشة الدخول
+              try { api.clearSession?.(); } catch {}
+            }
+          }
+        }).catch(() => {});
+      }
+    };
+
+    if (api?.isFreshStart) {
+      if (freshStartCache === null) {
+        api.isFreshStart()
+          .then((v: boolean) => { freshStartCache = !!v; restore(freshStartCache); })
+          .catch(() => restore(true));
+      } else {
+        restore(freshStartCache);
+      }
+    } else {
+      // ويب (متصفح) — مفيش عملية رئيسية: نفس سلوك النسخة القديمة
+      restore(false);
     }
   }, []);
 
@@ -140,7 +167,7 @@ export default function App() {
     sales: "printable-sales",
     purchases: "purchase-invoice-view",
     invoices_register: "printable-invoices",
-    accounts: "printable-accounts",
+    accounts: "printable-debts",
     items: "printable-items",
     inventory_audit: "printable-audit",
     suppliers: "printable-suppliers",
@@ -149,6 +176,7 @@ export default function App() {
     logs: "printable-logs",
     settings: "printable-settings",
     treasury: "printable-treasury",
+    drawer_close: "printable-drawer-close",
     developer: "printable-developer",
     tamween_customers: "printable-tamween-customers",
   };
@@ -164,7 +192,7 @@ export default function App() {
         return <InvoicesRegister currentUser={currentUser} />;
       case "accounts":
         return (
-          <Accounts
+          <DebtsPage
             currentUser={currentUser}
             onNavigateToTab={(tab) => setActiveTab(tab)}
             onWithdrawNow={(customer) => {
@@ -189,6 +217,8 @@ export default function App() {
         return <Settings currentUser={currentUser} />;
       case "treasury":
         return <Treasury currentUser={currentUser} />;
+      case "drawer_close":
+        return <DrawerClose currentUser={currentUser} />;
       case "developer":
         return <DeveloperPanel currentUser={currentUser} />;
       case "tamween_customers":
@@ -199,12 +229,12 @@ export default function App() {
       case "tamween_report":
         return <TamweenReport />;
       case "tamween_replacements":
-        return <TamweenReplacements onWithdrawNow={(customer) => {
+        return <TamweenReplacements currentUser={currentUser} onWithdrawNow={(customer) => {
           setTamweenCustomerForSale(customer);
           setActiveTab("sales");
         }} />;
       case "tamween":
-        return <TamweenHub onWithdrawNow={(customer) => {
+        return <TamweenHub currentUser={currentUser} onWithdrawNow={(customer) => {
           setTamweenCustomerForSale(customer);
           setActiveTab("sales");
         }} />;
@@ -261,14 +291,14 @@ export default function App() {
 
         {/* Top Control Bar - صف واحد مضغوط */}
         <div ref={topBarRef} className="bg-[var(--bg-deep)] flex flex-col shrink-0 z-30 min-w-0" id="top-enterprise-bar" style={{ WebkitAppRegion: 'drag' } as any}>
-          <div className="flex justify-between items-center px-2.5 sm:px-3 py-1.5 gap-2">
+          <div className="flex justify-between items-center px-2.5 sm:px-3 py-1 gap-2">
             <div className="flex items-center gap-2 min-w-0">
               {/* زر القائمة - أقصى اليمين فيزيائيا تحت أزرار الويندوز */}
               <button
                 onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
                 onMouseEnter={() => { if (sidebarTimerRef.current) clearTimeout(sidebarTimerRef.current); setIsSidebarCollapsed(false); }}
                 onMouseLeave={() => { sidebarTimerRef.current = setTimeout(() => setIsSidebarCollapsed(true), 600); }}
-                className={`p-1.5 sm:p-2 rounded-xl transition-all cursor-pointer shrink-0 border flex items-center gap-1 text-[10px] sm:text-xs font-black ${isSidebarCollapsed ? "bg-[var(--accent)] text-[var(--bg-deep)] border-[var(--accent)] shadow-lg" : "bg-[var(--bg-input)] text-[var(--text-primary)] border-[var(--border)] hover:bg-[var(--accent-subtle)]"}`}
+                className={`p-1 sm:p-1.5 rounded-xl transition-all cursor-pointer shrink-0 border flex items-center gap-1 text-[10px] sm:text-xs font-black ${isSidebarCollapsed ? "bg-[var(--accent)] text-[var(--bg-deep)] border-[var(--accent)] shadow-lg" : "bg-[var(--bg-input)] text-[var(--text-primary)] border-[var(--border)] hover:bg-[var(--accent-subtle)]"}`}
                 aria-label={isSidebarCollapsed ? "إظهار القائمة الجانبية" : "إخفاء القائمة الجانبية"}
                 title="مرر الماوس لفتح القائمة"
                 style={{ WebkitAppRegion: 'no-drag' } as any}
@@ -284,7 +314,7 @@ export default function App() {
             </div>
             <div className="flex items-center gap-2 sm:gap-3 text-xs lux-bar-muted font-medium shrink-0">
               <div style={{ WebkitAppRegion: 'no-drag' } as any}>
-                <UnifiedPrintButton printableId={printableMap[displayTab] || "app-viewport-inner"} title="طباعة" />
+                <UnifiedPrintButton printableId={printableMap[displayTab] || "app-viewport-inner"} title="طباعة" compact />
               </div>
               <LangIndicator />
               <div className="hidden xl:flex items-center gap-3">
@@ -292,14 +322,14 @@ export default function App() {
                 <span className="lux-bar-sep">|</span>
                 <span>الصلاحية: <strong className="lux-bar-strong">{currentUser.role === "developer" ? "منظومة الكابتن" : currentUser.role === "admin" ? "مدير النظام" : currentUser.role === "cashier" ? "الكاشير" : "المخزن"}</strong></span>
               </div>
-              <div className="flex items-center gap-1.5 text-xs font-bold lux-bar-strong bg-[var(--bg-input)] px-2 py-1 rounded-full border border-[var(--border)]">
+              <div className="flex items-center gap-1.5 text-xs font-bold lux-bar-strong bg-[var(--bg-input)] px-1.5 py-0.5 rounded-full border border-[var(--border)]">
                 <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block shrink-0 animate-pulse"></span>
                 <span>نشط</span>
               </div>
               <div className="w-px h-4 bg-[var(--border)] shrink-0" />
               <div className="flex items-center gap-0.5" style={{ WebkitAppRegion: 'no-drag' } as any}>
-                <button onClick={() => (window as any).electronAPI?.minimize()} className="w-6 h-6 flex items-center justify-center hover:bg-[var(--bg-input)] lux-bar-muted transition-colors cursor-pointer" title="تصغير"><Minus size={12} /></button>
-                <button onClick={() => (window as any).electronAPI?.close()} className="w-6 h-6 flex items-center justify-center hover:bg-[var(--danger)] hover:text-white lux-bar-muted transition-colors cursor-pointer" title="إغلاق"><X size={12} /></button>
+                <button onClick={() => (window as any).electronAPI?.minimize()} className="w-5 h-5 flex items-center justify-center hover:bg-[var(--bg-input)] lux-bar-muted transition-colors cursor-pointer" title="تصغير"><Minus size={12} /></button>
+                <button onClick={() => (window as any).electronAPI?.close()} className="w-5 h-5 flex items-center justify-center hover:bg-[var(--danger)] hover:text-white lux-bar-muted transition-colors cursor-pointer" title="إغلاق"><X size={12} /></button>
               </div>
             </div>
           </div>

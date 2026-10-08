@@ -14,6 +14,7 @@ import {
   History,
   Receipt,
   Printer,
+  Zap,
 } from "lucide-react";
 import { authFetch, hardRefocus } from "../authFetch";
 import UnifiedPrintButton from "./UnifiedPrintButton";
@@ -28,6 +29,11 @@ interface TamweenCustomer {
   status: string;
   status_month: string;
   created_at: string;
+  // دفتر البطاقات (من السيرفر): المسجّل • المصروف • المتبقي • آخر صرف
+  topped?: number;
+  spent?: number;
+  remaining?: number;
+  last_withdraw?: { invoice_number: string; date: string; amount: number; items?: any[] } | null;
 }
 
 interface TamweenStats {
@@ -206,6 +212,46 @@ export default function TamweenCustomers({ onWithdrawNow }: { onWithdrawNow?: (c
     }
   };
 
+  // شحن كارت (إضافة قيمة) — عملية منفصلة عن البيع في دفتر البطاقات
+  const [topupTarget, setTopupTarget] = useState<TamweenCustomer | null>(null);
+  const [topupAmount, setTopupAmount] = useState("");
+  const [topupNote, setTopupNote] = useState("");
+  const [topupBusy, setTopupBusy] = useState(false);
+
+  const handleTopup = async () => {
+    setError("");
+    const v = Number(topupAmount);
+    if (!topupTarget) return;
+    if (!(v > 0)) { setError("أدخل قيمة شحن أكبر من صفر"); return; }
+    setTopupBusy(true);
+    try {
+      const res = await authFetch("/api/tamween-card-ledger/topup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          customer_id: topupTarget.id,
+          secret_number: topupTarget.secret_number,
+          amount: v,
+          note: topupNote.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setSuccess(`تم شحن ${v.toFixed(2)} ج.م على بطاقة ${topupTarget.name} — المتبقي ${(Number(data.remaining) || 0).toFixed(2)} ج.م`);
+        setTopupTarget(null);
+        setTopupAmount("");
+        setTopupNote("");
+        fetchAll();
+      } else {
+        setError(data.error || "فشل الشحن");
+      }
+    } catch {
+      setError("خطأ في الاتصال بالخادم");
+    } finally {
+      setTopupBusy(false);
+    }
+  };
+
   const openHistory = async (customer: TamweenCustomer) => {
     setHistoryLoading(true);
     setShowHistoryModal(true);
@@ -284,7 +330,7 @@ export default function TamweenCustomers({ onWithdrawNow }: { onWithdrawNow?: (c
                 <span className="font-mono">تموين: {sumCard(items).toFixed(2)} ج.م</span>
                 <span className="font-mono">خبز: {sumBread(items).toFixed(2)} ج.م</span>
               </div>
-              <table className="w-full text-right text-xs min-w-[800px] border-collapse">
+              <table className="w-full text-right text-xs min-w-[1050px] border-collapse">
                 <thead className="sticky top-[33px]">
                   <tr className="bg-[#222222] text-[#c3c6bb] font-bold h-9">
                     <th className="py-2 px-3">#</th>
@@ -292,6 +338,8 @@ export default function TamweenCustomers({ onWithdrawNow }: { onWithdrawNow?: (c
                     <th className="py-2 px-3">الرقم السري</th>
                     <th className="py-2 px-3">التليفون</th>
                     <th className="py-2 px-3 text-center">مبلغ البطاقة</th>
+                    <th className="py-2 px-3 text-center">فاضل (متبقّي)</th>
+                    <th className="py-2 px-3">آخر بضاعة صُرفت</th>
                     <th className="py-2 px-3 text-center">نقاط الخبز</th>
                     <th className="py-2 px-3 text-center">إجراءات</th>
                   </tr>
@@ -305,10 +353,29 @@ export default function TamweenCustomers({ onWithdrawNow }: { onWithdrawNow?: (c
                       </td>
                       <td className="py-2 px-3 font-mono font-black">{c.secret_number}</td>
                       <td className="py-2 px-3 font-mono">{c.phone || "-"}</td>
-                      <td className="py-2 px-3 text-center font-mono">{c.card_value} ج.م</td>
-                      <td className="py-2 px-3 text-center font-mono">{c.bread_points} ج.م</td>
+                      <td className="py-2 px-3 text-center font-mono">{Number(c.card_value || 0).toFixed(2)} ج.م</td>
+                      <td
+                        className="py-2 px-3 text-center font-mono font-black"
+                        style={{ color: (Number(c.remaining) || 0) > 0.001 ? "#1d4ed8" : "#555555" }}
+                        title="المسجّل مطروح عليه الفواتير"
+                      >
+                        {(Number(c.remaining) || 0).toFixed(2)} ج.م
+                      </td>
+                      <td className="py-2 px-3 text-[10px] text-[#555555] font-bold">
+                        {c.last_withdraw?.items?.length
+                          ? c.last_withdraw.items.map((i: any) => `${i.name}${Number(i.quantity) > 1 ? ` ×${i.quantity}` : ""}`).join(" + ")
+                          : (c.last_withdraw ? c.last_withdraw.invoice_number : "—")}
+                      </td>
+                      <td className="py-2 px-3 text-center font-mono">{Number(c.bread_points || 0).toFixed(2)} ج.م</td>
                       <td className="py-2 px-3 text-center">
                         <div className="flex items-center justify-center gap-1">
+                          <button
+                            onClick={() => { setTopupTarget(c); setTopupAmount(""); setTopupNote(""); setError(""); }}
+                            className="w-8 h-8 flex items-center justify-center bg-[#f39c12] hover:bg-[#e67e22] text-white border-none cursor-pointer"
+                            title="شحن كارت (إضافة قيمة على البطاقة)"
+                          >
+                            <Zap size={12} />
+                          </button>
                           {c.status_month === filterMonth && c.status === "later" && onWithdrawNow && (
                             <button
                               onClick={async () => {
@@ -673,11 +740,11 @@ export default function TamweenCustomers({ onWithdrawNow }: { onWithdrawNow?: (c
                   <label className="block text-[#000000] mb-1 text-xs font-bold">مبلغ البطاقة (ج.م)</label>
                   <input
                     type="number"
-                    step="0.01"
-                    min="0"
+                    step="1"
+                    min="1"
                     value={formCardValue || ""}
                     onChange={(e) => setFormCardValue(Number(e.target.value) || 0)}
-                    placeholder="0.00"
+                    placeholder="48"
                     className="w-full h-9 bg-[#b8bcb2] border border-[#888888] px-3 text-right text-xs font-bold text-[#000000] focus:outline-none focus:border-[#222222]"
                   />
                 </div>
@@ -705,6 +772,67 @@ export default function TamweenCustomers({ onWithdrawNow }: { onWithdrawNow?: (c
               </button>
               <button
                 onClick={() => { setShowModal(false); resetForm(); }}
+                className="h-10 px-6 bg-[#888888] hover:bg-[#666666] text-white font-black text-xs transition-colors cursor-pointer"
+              >
+                إلغاء
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* شحن كارت — إضافة قيمة على بطاقة الزبون (عملية منفصلة في الدفتر) */}
+      {topupTarget && (
+        <div className="fixed inset-0 bg-[#000000]/60 flex justify-center items-center p-4 z-50">
+          <div className="bg-[#c3c6bb] border border-[#222222] p-5 w-full max-w-md relative space-y-4">
+            <button
+              onClick={() => setTopupTarget(null)}
+              className="absolute top-3 left-3 w-7 h-7 flex items-center justify-center bg-[#b8bcb2] hover:bg-[#222222] hover:text-[#c3c6bb] border border-[#888888] text-[#000000] cursor-pointer"
+            >
+              <X size={14} />
+            </button>
+            <h3 className="text-sm font-black text-[#000000] border-b border-[#888888] pb-2">
+              شحن كارت — {topupTarget.name}
+            </h3>
+            <div className="text-xs font-black font-mono text-[#555555]">
+              المسجّل: {(Number(topupTarget.topped) || 0).toFixed(2)} • المتبقي: {(Number(topupTarget.remaining) || 0).toFixed(2)} ج.م
+            </div>
+            <div>
+              <label className="block text-[#000000] mb-1 text-xs font-bold">قيمة الشحن (ج.م)</label>
+              <input
+                type="number"
+                step="1"
+                min="1"
+                autoFocus
+                value={topupAmount}
+                onChange={(e) => setTopupAmount(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleTopup(); } if (e.key === "Escape") setTopupTarget(null); }}
+                placeholder="مثال: 98"
+                className="w-full h-9 bg-[#b8bcb2] border border-[#888888] px-3 text-right text-xs font-bold text-[#000000] focus:outline-none focus:border-[#222222]"
+              />
+            </div>
+            <div>
+              <label className="block text-[#000000] mb-1 text-xs font-bold">ملاحظة (اختياري)</label>
+              <input
+                type="text"
+                value={topupNote}
+                onChange={(e) => setTopupNote(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleTopup(); } }}
+                placeholder="مثال: شهر جديد / تسليم بطاقة"
+                className="w-full h-9 bg-[#b8bcb2] border border-[#888888] px-3 text-right text-xs font-bold text-[#000000] focus:outline-none focus:border-[#222222]"
+              />
+            </div>
+            {error && <div className="text-[#9b1c1c] text-[11px] font-black">{error}</div>}
+            <div className="flex gap-2 pt-2">
+              <button
+                onClick={handleTopup}
+                disabled={topupBusy}
+                className="h-10 px-6 bg-[#27ae60] hover:bg-[#219a52] text-white font-black text-xs transition-colors cursor-pointer disabled:opacity-60"
+              >
+                {topupBusy ? "جاري الشحن..." : "شحن البطاقة"}
+              </button>
+              <button
+                onClick={() => setTopupTarget(null)}
                 className="h-10 px-6 bg-[#888888] hover:bg-[#666666] text-white font-black text-xs transition-colors cursor-pointer"
               >
                 إلغاء
@@ -864,7 +992,7 @@ export default function TamweenCustomers({ onWithdrawNow }: { onWithdrawNow?: (c
                                   <tr className="hover:bg-[#f5f5f5]">
                                     <td className="py-2 px-3 font-mono">{inv.invoice_number}</td>
                                     <td className="py-2 px-3 font-mono">{inv.date} <span className="text-[10px] text-[#888]">({inv.created_at || ""})</span></td>
-                                    <td className="py-2 px-3 font-mono text-[11px]">دعم: {(inv.tamween_discount ?? 0).toFixed?.(2) ?? inv.tamween_discount} | خبز: {(inv.bread_points ?? 0).toFixed?.(2) ?? inv.bread_points}</td>
+                                    <td className="py-2 px-3 font-mono text-[11px]">دعم: {(inv.tamween_discount ?? 0).toFixed?.(2) ?? inv.tamween_discount} | خبز: {(inv.bread_points ?? 0).toFixed?.(2) ?? inv.bread_points}{inv.details ? (<><br /><span className="text-[10px] text-[#555]">{inv.details}</span></>) : null}</td>
                                     <td className="py-2 px-3 font-mono">{inv.total?.toFixed(2)} ج.م</td>
                                     <td className="py-2 px-3">
                                       <span className={`px-2 py-0.5 text-[10px] font-bold ${inv.status === 'returned' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
@@ -1050,6 +1178,7 @@ export default function TamweenCustomers({ onWithdrawNow }: { onWithdrawNow?: (c
                       <th className="py-3 px-3">اسم العميل</th>
                       <th className="py-3 px-3">الرقم السري</th>
                       <th className="py-3 px-3 text-center">مبلغ التموين</th>
+                      <th className="py-3 px-3 text-center">فاضل</th>
                       <th className="py-3 px-3 text-center">نقاط الخبز</th>
                     </tr>
                   </thead>
@@ -1059,16 +1188,20 @@ export default function TamweenCustomers({ onWithdrawNow }: { onWithdrawNow?: (c
                         <td className="py-2 px-3 text-[#555555] font-mono">{(Math.min(pageAll, Math.max(1, Math.ceil(customers.length / PAGE_SIZE))) - 1) * PAGE_SIZE + idx + 1}</td>
                         <td className="py-2 px-3 font-extrabold">{c.name}</td>
                         <td className="py-2 px-3 font-mono font-black">{c.secret_number}</td>
-                        <td className="py-2 px-3 text-center font-mono">{c.card_value} ج.م</td>
-                        <td className="py-2 px-3 text-center font-mono">{c.bread_points} ج.م</td>
+                        <td className="py-2 px-3 text-center font-mono">{Number(c.card_value || 0).toFixed(2)} ج.م</td>
+                        <td className="py-2 px-3 text-center font-mono font-black" style={{ color: (Number(c.remaining) || 0) > 0.001 ? "#1d4ed8" : "#555555" }}>
+                          {(Number(c.remaining) || 0).toFixed(2)} ج.م
+                        </td>
+                        <td className="py-2 px-3 text-center font-mono">{Number(c.bread_points || 0).toFixed(2)} ج.م</td>
                       </tr>
                     ))}
                   </tbody>
                   <tfoot>
                     <tr className="bg-[#222222] text-[#c3c6bb] font-black">
                       <td className="py-2 px-3" colSpan={3}>الإجمالي الكلي</td>
-                      <td className="py-2 px-3 text-center font-mono">{customers.reduce((s, c) => s + c.card_value, 0)} ج.م</td>
-                      <td className="py-2 px-3 text-center font-mono">{customers.reduce((s, c) => s + c.bread_points, 0)} ج.م</td>
+                      <td className="py-2 px-3 text-center font-mono">{customers.reduce((s, c) => s + Number(c.card_value || 0), 0).toFixed(2)} ج.م</td>
+                      <td className="py-2 px-3 text-center font-mono">{customers.reduce((s, c) => s + (Number(c.remaining) || 0), 0).toFixed(2)} ج.م</td>
+                      <td className="py-2 px-3 text-center font-mono">{customers.reduce((s, c) => s + Number(c.bread_points || 0), 0).toFixed(2)} ج.م</td>
                     </tr>
                   </tfoot>
                 </table>

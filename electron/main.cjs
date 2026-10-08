@@ -7,6 +7,11 @@ const net = require('net');
 let mainWindow = null;
 const SERVER_PORT = 3000;
 
+// كنترول+R: العملية الرئيسية بتفضل شغالة والصفحة بس اللي بتعيد التحميل.
+// العلامة بتقول للفرونت «دي أول تحميلة بعد تشغيل البرنامج» — أول استدعاء يرجع true
+// وبعدها false، يعني أي إعادة تحميل جوه نفس التشغيلة ترجع false (نرجّع المستخدم).
+let freshStart = true;
+
 // سجل أعطال على القرص — أي اختفاء/كراش بعد كده هيسيب أثر نعرف منه السبب
 function logPath() {
   try { return path.join(app.getPath('userData'), 'captain-crash.log'); }
@@ -246,17 +251,27 @@ function createWindow() {
     } catch {}
   });
 
-  // حفظ/استرجاع/مسح الجلسة من ملف على القرص
+  // الدخول التلقائي اتشال (قرار الكابتن 2026-09-29): مفيش جلسة بتتسجل على القرص،
+  // والبرنامج بقى يطلب كلمة السر مع كل تشغيلة — أي ملف جلسة قديم بيتمسح أول تشغيل.
   const sessionFile = () => path.join(app.getPath('userData'), 'captain-session.json');
-  ipcMain.handle('session-save', async (_e, user) => {
-    try { fs.writeFileSync(sessionFile(), JSON.stringify(user), 'utf-8'); return true; } catch { return false; }
+  ipcMain.handle('session-save', async () => {
+    try { fs.unlinkSync(sessionFile()); } catch {}
+    return true;
   });
   ipcMain.handle('session-load', async () => {
-    try { const data = fs.readFileSync(sessionFile(), 'utf-8'); return JSON.parse(data); } catch { return null; }
+    try { fs.unlinkSync(sessionFile()); } catch {}
+    return null;
   });
   ipcMain.handle('session-clear', async () => {
     try { fs.unlinkSync(sessionFile()); } catch {}
     return true;
+  });
+
+  // كنترول+R / F5 → أول مرة true (تشغيل جديد = شاشة الدخول)، بعدها false (نرجّع الجلسة)
+  ipcMain.handle('app-fresh-start', async () => {
+    const v = freshStart;
+    freshStart = false;
+    return v;
   });
 
   // لما الويندوز يتقفل → نظّف ملف الجلسة

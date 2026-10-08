@@ -28,6 +28,7 @@ export default function UsersManagement({ currentUser }: UsersProps) {
 
   const availablePermissions = [
     { id: "sales", label: "درج الكاشير والمبيعات" },
+    { id: "drawer", label: "تقفيل اليومية وعدّ الفلوس" },
     { id: "purchases", label: "إدخال المشتريات والتوريد" },
     { id: "items", label: "إدارة الأصناف المخزنية والأسعار" },
     { id: "suppliers", label: "إدارة الموردين والجهات" },
@@ -363,7 +364,7 @@ export default function UsersManagement({ currentUser }: UsersProps) {
                     if (r === "admin") {
                       setPermissions(["sales", "purchases", "items", "suppliers", "reports", "users"]);
                     } else if (r === "cashier") {
-                      setPermissions(["sales"]);
+                      setPermissions(["sales", "drawer"]);
                     } else if (r === "storekeeper") {
                       setPermissions(["purchases", "items", "suppliers"]);
                     }

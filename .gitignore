@@ -6,6 +6,10 @@ uploads/
 database.sqlite
 database.sqlite-shm
 database.sqlite-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.backup
 *.log
 .env
 .captain-jwt-secret

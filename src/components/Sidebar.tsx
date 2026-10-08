@@ -15,7 +15,8 @@ import {
   Terminal,
   FileText,
   CreditCard,
-  Wallet
+  Wallet,
+  LockKeyhole
 } from "lucide-react";
 import { User } from "../types";
 import ThemeSwitcher from "./ThemeSwitcher";
@@ -43,6 +44,7 @@ const tabColors: Record<string, string> = {
   logs: "from-gray-500 to-slate-700",
   settings: "from-slate-600 to-gray-800",
   treasury: "from-yellow-500 to-amber-700",
+  drawer_close: "from-lime-600 to-emerald-800",
   developer: "from-red-600 to-rose-800",
   tamween: "from-teal-500 to-cyan-600",
 };
@@ -72,14 +74,15 @@ export default function Sidebar({
     { id: "dashboard", label: "الشاشة الرئيسية", description: "لوحة الإحصائيات والنشاط", icon: LayoutDashboard, permission: null },
     { id: "sales", label: "لوحة الكاشير", description: "إصدار فواتير المبيعات", icon: ShoppingCart, permission: "sales" },
     { id: "tamween", label: "المنظومة التموينية", description: "عملاء و	report و استعاضات", icon: CreditCard, permission: "reports" },
+    { id: "accounts", label: "الديون", description: "ديون الزبائن والموردين والكروت", icon: Wallet, permission: "accounts" },
     { id: "suppliers", label: "سجل الموردين", description: "قائمة الموردين", icon: Truck, permission: "suppliers" },
     { id: "items", label: "إدارة الأصناف", description: "إضافة وتعديل الأصناف", icon: Package, permission: "items" },
     { id: "purchases", label: "فاتورة مشتريات", description: "تسجيل فواتير المشتريات", icon: TrendingDown, permission: "purchases" },
     { id: "invoices_register", label: "سجل الفواتير", description: "عرض جميع الفواتير", icon: FileText, permission: "reports" },
-    { id: "accounts", label: "حسابات الزبائن", description: "الديون والآجل والبطاقات", icon: Wallet, permission: "accounts" },
     { id: "logs", label: "سجل العمليات", description: "سجل النشاط والتغييرات", icon: ClipboardList, permission: "reports" },
     { id: "reports", label: "التقارير المحاسبية", description: "تقارير مالية ومحاسبية", icon: BarChart3, permission: "reports" },
     { id: "treasury", label: "اللوحة المالية", description: "الخزينة والحسابات", icon: Banknote, permission: "admin" },
+    { id: "drawer_close", label: "تقفيل اليومية", description: "عدّ فلوس الدرج ومقارنة المتوقع", icon: LockKeyhole, permission: "drawer" },
     { id: "inventory_audit", label: "جرد المخزن الكلي", description: "جرد شامل للمخزون", icon: ClipboardCheck, permission: "items" },
     { id: "users", label: "إدارة المستخدمين", description: "إدارة حسابات النظام", icon: Users, permission: "users" },
     { id: "settings", label: "إعدادات النظام", description: "ضبط إعدادات النظام", icon: Settings, permission: "admin" },

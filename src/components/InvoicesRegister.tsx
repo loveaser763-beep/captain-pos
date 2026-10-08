@@ -93,6 +93,20 @@ export default function InvoicesRegister({ currentUser }: InvoicesRegisterProps)
       const res = await authFetch(`/api/invoices/${invoiceId}`);
       if (res.ok) {
         const { invoice, items } = await res.json();
+        // فاضل بطاقته دلوقتي (أحدث رصيد من دفتر البطاقات)
+        let cardRemaining: number | null = null;
+        if (invoice.type === "sales" && (invoice.tamween_discount || 0) > 0 && (invoice.tamween_customer_id || invoice.secret_number)) {
+          try {
+            const q = invoice.tamween_customer_id
+              ? `id=${invoice.tamween_customer_id}&name=${encodeURIComponent(invoice.customer_supplier_name || "")}`
+              : `secret_number=${encodeURIComponent(invoice.secret_number || "")}&name=${encodeURIComponent(invoice.customer_supplier_name || "")}`;
+            const lr = await authFetch(`/api/tamween-card-ledger?${q}`);
+            if (lr.ok) {
+              const ld = await lr.json();
+              if (!ld.error) cardRemaining = Number(ld.remaining) || 0;
+            }
+          } catch {}
+        }
         setPrintData({
           type: invoice.type,
           invoice_number: invoice.invoice_number,
@@ -103,7 +117,9 @@ export default function InvoicesRegister({ currentUser }: InvoicesRegisterProps)
           tax: invoice.tax || 0,
           discount: invoice.discount || 0,
           tamween_discount: invoice.tamween_discount || 0,
+          cardRemaining,
           bread_points: invoice.bread_points || 0,
+          details: invoice.details || "",
           bonus: invoice.bonus || 0,
           total: invoice.total,
           paid: invoice.paid || invoice.total,
@@ -415,12 +431,25 @@ export default function InvoicesRegister({ currentUser }: InvoicesRegisterProps)
                     <span style={{ fontFamily: "monospace" }}>{(printData.tax || 0).toFixed(2)} ج.م</span>
                   </div>
                 )}
-                {(printData.tamween_discount || 0) > 0 && (
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
-                    <span style={{ fontWeight: "bold" }}>خصم البطاقة التموينية:</span>
-                    <span style={{ fontFamily: "monospace" }}>-{(printData.tamween_discount || 0).toFixed(2)} ج.م</span>
-                  </div>
-                )}
+                {(printData.tamween_discount || 0) > 0 && (() => {
+                  const cardGoods = (printData.items || []).map((it: any) => it.name).join(" + ");
+                  return (
+                    <>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
+                        <span style={{ fontWeight: "bold" }}>صرف من بطاقة التموين:</span>
+                        <span style={{ fontFamily: "monospace" }}>
+                          -{(printData.tamween_discount || 0).toFixed(2)} ج.م{cardGoods ? ` (${cardGoods.length > 46 ? cardGoods.slice(0, 46) + "…" : cardGoods})` : ""}
+                        </span>
+                      </div>
+                      {printData.cardRemaining !== null && printData.cardRemaining !== undefined && (
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
+                          <span style={{ fontWeight: "bold" }}>فاضل على الزبون (دلوقتي):</span>
+                          <span style={{ fontFamily: "monospace" }}>{Number(printData.cardRemaining).toFixed(2)} ج.م</span>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
                 {(printData.bread_points || 0) > 0 && (
                   <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
                     <span style={{ fontWeight: "bold" }}>نقاط الخبز:</span>
@@ -431,6 +460,12 @@ export default function InvoicesRegister({ currentUser }: InvoicesRegisterProps)
                   <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px", borderTop: "1px dashed #000", paddingTop: "4px" }}>
                     <span style={{ fontWeight: "900" }}>إجمالي الدعم ونقاط الخبز:</span>
                     <span style={{ fontFamily: "monospace", fontWeight: "900" }}>-{((printData.tamween_discount || 0) + (printData.bread_points || 0)).toFixed(2)} ج.م</span>
+                  </div>
+                )}
+                {(printData.details || "") && (
+                  <div style={{ marginBottom: "4px", borderTop: "1px dashed #000", paddingTop: "4px", fontSize: "11px" }}>
+                    <span style={{ fontWeight: "900" }}>تفصيل الكارت والنقاط:</span>
+                    <div style={{ fontFamily: "monospace" }}>{printData.details}</div>
                   </div>
                 )}
                 {(printData.bonus || 0) > 0 && (

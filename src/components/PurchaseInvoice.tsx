@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { localDateStr } from "../localDate";
 import {
   TrendingDown,
   Plus,
@@ -204,7 +205,7 @@ export default function PurchaseInvoice({ currentUser }: PurchaseInvoiceProps) {
   const handleSubmitRef = useRef<any>(null);
 
   const generateInvoiceProps = () => {
-    const formattedDate = new Date().toISOString().split("T")[0];
+    const formattedDate = localDateStr();
     setDate(formattedDate);
     const randNum = Math.floor(100000 + Math.random() * 900000);
     setInvoiceNumber(`PINV-${randNum}`);
@@ -613,9 +614,36 @@ if (true) {
       )}
 
       {error && (
-        <div className="bg-[#c3c6bb] border border-[#222222] p-3 text-[#000000] text-xs flex items-center gap-2 font-bold" id="purchase-error">
-          <AlertTriangle size={16} strokeWidth={1.5} className="shrink-0 text-[#222222]" />
-          <p className="text-right">{error}</p>
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center p-4 no-print"
+          style={{ background: "rgba(0,0,0,0.6)" }}
+        >
+          <div
+            className="w-full max-w-md rounded-xl overflow-hidden shadow-2xl"
+            style={{ background: "#ffffff", border: "2px solid #9b1c1c" }}
+            id="purchase-error-modal"
+          >
+            <div className="px-4 py-3 flex items-center gap-2" style={{ background: "#9b1c1c" }}>
+              <AlertTriangle size={17} strokeWidth={2.2} className="text-white shrink-0" />
+              <span className="text-white font-black text-sm">تعذّر حفظ الفاتورة</span>
+            </div>
+            <div className="px-5 py-6 text-center">
+              <p className="text-xs font-black leading-7" style={{ color: "#9b1c1c" }}>
+                {error}
+              </p>
+            </div>
+            <div className="px-4 pb-4">
+              <button
+                type="button"
+                onClick={() => setError("")}
+                className="w-full h-10 rounded-lg font-black text-sm text-white transition-opacity cursor-pointer hover:opacity-90"
+                style={{ background: "#9b1c1c" }}
+                id="purchase-error-ok"
+              >
+                موافق
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

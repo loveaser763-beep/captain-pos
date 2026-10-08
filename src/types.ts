@@ -45,6 +45,7 @@ export interface InvoiceItem {
   is_unlimited?: number;
   stock_quantity?: number;
   low_stock_limit?: number;
+  is_tamween?: number; // 1 = متعلّم بند تمويني (أساس قاعدة حدود السكر والزيت)
 }
 
 export interface Invoice {

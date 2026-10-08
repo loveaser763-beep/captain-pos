@@ -55,6 +55,33 @@ export async function authFetch(url: string, options: RequestInit = {}): Promise
   return res;
 }
 
+// تنزيل ملف محمي بـ Bearer token.
+// بوابة الأمان في السيرفر بتشترط ترويسة Authorization على كل /api،
+// يعني <a href="/api/..."> العادي بيرجّع 401 — فلازم نجيب الملف بـ fetch ثم ننزّله.
+export async function authDownload(url: string, fallbackName?: string): Promise<boolean> {
+  try {
+    const res = await authFetch(url);
+    if (!res.ok) return false;
+    const blob = await res.blob();
+    let name = fallbackName || "";
+    if (!name) {
+      const disp = res.headers.get("Content-Disposition") || "";
+      const m = /filename="?([^";]+)"?/i.exec(disp);
+      name = m ? m[1] : decodeURIComponent(url.split("/").pop() || "download");
+    }
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = href;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(href); a.remove(); }, 1500);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Login helper
 export async function login(username: string, password: string): Promise<{ success: boolean; token?: string; user?: any; message?: string }> {
   const res = await fetch("/api/auth/login", {

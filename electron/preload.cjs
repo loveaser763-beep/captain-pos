@@ -10,4 +10,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveSession: (user) => ipcRenderer.invoke('session-save', user),
   loadSession: () => ipcRenderer.invoke('session-load'),
   clearSession: () => ipcRenderer.invoke('session-clear'),
+  isFreshStart: () => ipcRenderer.invoke('app-fresh-start'),
 });

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { localDateStr } from "../localDate";
 import {
   ShoppingCart,
   Search,
@@ -15,10 +16,13 @@ import {
   ExternalLink,
   Undo2,
   Star,
+  Receipt,
+  LockKeyhole,
 } from "lucide-react";
 import { Item, InvoiceItem, User as LoggedUser } from "../types";
 import { authFetch, hardRefocus } from "../authFetch";
 import UnifiedPrintButton from "./UnifiedPrintButton";
+import DrawerClose from "./DrawerClose";
 
 interface SalesInvoiceProps {
   currentUser: LoggedUser | null;
@@ -26,6 +30,20 @@ interface SalesInvoiceProps {
   onClearTamweenCustomer?: () => void;
   onNavigateToTab?: (tab: string) => void;
 }
+
+// تصنيفات المصروف السريع من شاشة الكاشير — fallback لو السيرفر ما ردش
+// المصدر الأساسي: نفس قائمة «المسحوبات والنثريات» في التقارير (GET /api/expense-categories)
+const EXPENSE_CATEGORIES = [
+  "عمالة",
+  "طلبات للبيت",
+  "ضيافة للمحل",
+  "شراء طلب للمحل",
+  "نقل وشحن بضاعة",
+  "نثريات وتلفيات",
+  "لابويا",
+];
+type ExpenseCat = { value: string; label: string };
+const EXPENSE_CATS_FALLBACK: ExpenseCat[] = EXPENSE_CATEGORIES.map((c) => ({ value: c, label: c }));
 
 export default function SalesInvoice({ currentUser, tamweenCustomer, onClearTamweenCustomer, onNavigateToTab }: SalesInvoiceProps) {
   const [invoiceNumber, setInvoiceNumber] = useState("");
@@ -43,8 +61,35 @@ export default function SalesInvoice({ currentUser, tamweenCustomer, onClearTamw
   const [secretSuggestions, setSecretSuggestions] = useState<any[]>([]);
   const [showNameDropdown, setShowNameDropdown] = useState(false);
   const [showSecretDropdown, setShowSecretDropdown] = useState(false);
-  const [withdrawalChoice, setWithdrawalChoice] = useState<"now" | "later">("now");
+  const [withdrawalChoice, setWithdrawalChoice] = useState<"now" | "later" | "part">("now");
+  // زر «مصروف» — تسجيل مصروف سريع من الشاشة دي من غير تحويل لصفحة التقارير
+  const [expenseOpen, setExpenseOpen] = useState(false);
+  const [expenseSaving, setExpenseSaving] = useState(false);
+  const [expenseError, setExpenseError] = useState("");
+  // تصنيفات المصروف = نفس قائمة التقارير (GET /api/expense-categories) — أي تصنيف جديد هناك يظهر هنا فورًا
+  const [expenseCats, setExpenseCats] = useState<ExpenseCat[]>(EXPENSE_CATS_FALLBACK);
+  // نافذة تقفيل اليومية المصغّرة بدل تحويل الكاشير للصفحة كاملة
+  const [drawerCloseOpen, setDrawerCloseOpen] = useState(false);
+  const [expenseForm, setExpenseForm] = useState({
+    payment_source: "cash_register",
+    title: "",
+    amount: 0,
+    category: EXPENSE_CATEGORIES[0],
+    date: new Date().toISOString().split("T")[0],
+    notes: "",
+  });
+
   const [tamweenCustomerId, setTamweenCustomerId] = useState<number | null>(null);
+  // زر «سداد دين» — صندوقا «دين لينا» / «دين علينا» + بحث عن الشخص (زبون أو مورّد) وتنفيذ على الخزنة
+  const [settleOpen, setSettleOpen] = useState(false);
+  const [settleLoading, setSettleLoading] = useState(false);
+  const [settleAccounts, setSettleAccounts] = useState<any[]>([]);
+  const [settleDir, setSettleDir] = useState<"withdraw" | "deposit">("deposit");
+  const [settleQuery, setSettleQuery] = useState("");
+  const [settleSelected, setSettleSelected] = useState<any | null>(null);
+  const [settleForm, setSettleForm] = useState({ payment_source: "cash_register", amount: 0, note: "" });
+  const [settleSaving, setSettleSaving] = useState(false);
+  const [settleError, setSettleError] = useState("");
   // الحافز (Bonus) - manual input (بالموجب)
   const [bonus, setBonus] = useState(0);
 
@@ -97,6 +142,113 @@ export default function SalesInvoice({ currentUser, tamweenCustomer, onClearTamw
     }, 200);
     return () => clearTimeout(timer);
   }, [secretNumber, showSecretDropdown]);
+
+  // دفتر بطاقات الزبون: المسجّل • المتبقي • آخر صرف (لو الرقم السري مسجّل)
+  const [cardState, setCardState] = useState<{ topped: number; remaining: number; last: any; monthUsed?: { month: string; sugar: number; oil: number } | null; breadBalance?: number } | null>(null);
+  // الرقم السري مش مطابق للاسم (الأرقام بتتكرر بين زبائن)
+  const [cardMismatch, setCardMismatch] = useState<string | null>(null);
+  // تنبيه الصرف القديم (كلي/جزئي/مؤجّل) — يظهر مرة واحدة لكل زبون مستدعى
+  const [oldSpend, setOldSpend] = useState<{ name: string; spent: number; topped: number; remaining: number; status: string; pending: boolean; pendingJson: string } | null>(null);
+  const oldSpendKeyRef = useRef("");
+  // مفتاح آخر استعلام دفتر اكتمل (سري|اسم) — نتيجة قديمة لمدخلات تانية متتطبّقش ومتوقفش الحفظ
+  const cardLookupKeyRef = useRef("");
+  // صرف الشهر الحالي — فورًا ما يتكتب الاسم والرقم السري بنقول «تم الصرف هذا الشهر» ونرفض البيع
+  const [cardWithdrawnThisMonth, setCardWithdrawnThisMonth] = useState<{ month: string; name: string } | null>(null);
+  // نافذة «تفاصيل»: كل العمليات اللي حصلت على الكارت من يوم اتحفظ في البرنامج
+  const [cardDetailOpen, setCardDetailOpen] = useState(false);
+  const [cardDetailLoading, setCardDetailLoading] = useState(false);
+  const [cardDetail, setCardDetail] = useState<any | null>(null);
+  const [cardDetailError, setCardDetailError] = useState("");
+  useEffect(() => {
+    const sec = secretNumber.trim();
+    const nm = customerName.trim();
+    // الجملة: قسم الكارت مقفول — مفيش بحث في دفتر البطاقات ولا رفض البيع بسبب صرف الشهر
+    if (saleType === "wholesale") { setCardState(null); setCardMismatch(null); setCardWithdrawnThisMonth(null); setOldSpend(null); cardLookupKeyRef.current = ""; return; }
+      // البحث الفوري من أول حرف (طلب 84) — بشرط الاسم مكتوب (الهوية = اسم + سرّي مع بعض دائمًا) · السرّي لوحده يستنى 3 أحرف
+      if (sec.length < 1 || (sec.length < 3 && !nm)) { setCardState(null); setCardMismatch(null); setCardWithdrawnThisMonth(null); cardLookupKeyRef.current = ""; return; }
+      // قاعدة المطابقة: الاسم والرقم السري لازم مع بعض — الرقم السري لوحده ما يثبتش الهوية
+      if (!nm) {
+        setCardState(null);
+        setCardMismatch("لازم تكتب الاسم والرقم السري مع بعض — الرقم السري لوحده ما يكفيش لصرف أي كارت.");
+        setCardWithdrawnThisMonth(null);
+        setOldSpend(null);
+        cardLookupKeyRef.current = "";
+        return;
+      }
+    // المدخلات اتغيّرت → أي نتيجة قديمة معروضة (لزبون تاني) بقت باطلة فورًا:
+    // بنمسح حالات المنع القديمة لحد ما الاستعلام الجديد يخلص (250ms)
+    const lookupKey = `${sec}|${nm}`;
+    setCardWithdrawnThisMonth(null);
+    setOldSpend(null);
+    oldSpendKeyRef.current = "";
+    const timer = setTimeout(() => {
+      authFetch(`/api/tamween-card-ledger?secret_number=${encodeURIComponent(sec)}&name=${encodeURIComponent(nm)}`)
+        .then(r => (r.ok ? r.json() : null))
+        .then((d: any) => {
+          // لو المستخدم غيّر الاسم/السري أثناء الانتظار → الرد ده قديم وبيتجاهل (ميمنعش حفظ باسم تاني)
+          if (`${secretNumber.trim()}|${customerName.trim()}` !== lookupKey) return;
+          cardLookupKeyRef.current = lookupKey;
+          if (!d) { setCardState(null); setCardMismatch(null); setCardWithdrawnThisMonth(null); return; }
+          if (d.mismatch) { setCardState(null); setCardMismatch(d.message || "الرقم السري مش مطابق للاسم."); setCardWithdrawnThisMonth(null); return; }
+          if (d.error) { setCardState(null); setCardMismatch(null); setCardWithdrawnThisMonth(null); return; }
+          setCardMismatch(null);
+          const cu = d.customer;
+          const spent = Number(d.spent || 0);
+          const status = String(cu?.status || "");
+          const hasPending = !!(cu?.pending_sale_json && String(cu.pending_sale_json).trim());
+          setCardState({
+            topped: Number(d.topped || 0),
+            remaining: Number(d.remaining || 0),
+            last: d.lastWithdraw || null,
+            monthUsed: d.monthUsed || null,
+            // رصيد نقاط الخبز عند الزبون — لمنع الخصم فوق الرصيد
+            breadBalance: cu?.bread_points != null ? Number(cu.bread_points) : undefined,
+          });
+          // ── صرف الشهر ده: الرفض التام (مفيش بيع له الشهر ده خالص) ──
+          const curMonth = new Date().toISOString().slice(0, 7);
+          const statusMonth = String(cu?.status_month || "").slice(0, 7);
+          const withdrawnThisMonth = status === "withdrawn" && !!statusMonth && statusMonth === curMonth;
+          setCardWithdrawnThisMonth(withdrawnThisMonth ? { month: statusMonth, name: cu?.name || nm } : null);
+          // الصرف القديم: مؤجّل · تم الصرف من قبل (شهر تاني) · أو فيه فاتورة معلّقة
+          const hasOld = !withdrawnThisMonth && (status === "later" || status === "withdrawn" || hasPending);
+          const key = `${cu?.id || sec}|${sec}`;
+          if (hasOld) {
+            if (oldSpendKeyRef.current !== key) {
+              oldSpendKeyRef.current = key;
+              setOldSpend({ name: cu?.name || nm, spent, topped: Number(d.topped || 0), remaining: Number(d.remaining || 0), status, pending: hasPending, pendingJson: String(cu.pending_sale_json || "") });
+            }
+          } else {
+            oldSpendKeyRef.current = "";
+            setOldSpend(null);
+          }
+        })
+        .catch(() => { if (`${secretNumber.trim()}|${customerName.trim()}` !== lookupKey) return; cardLookupKeyRef.current = lookupKey; setCardState(null); setCardMismatch(null); setCardWithdrawnThisMonth(null); });
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [secretNumber, customerName, saleType]);
+
+  // زر «تفاصيل» في شريط البطاقة — سجل كامل بكل عمليات الكارت من أول ما اتحفظ
+  const openCardDetails = async () => {
+    setCardDetailOpen(true);
+    setCardDetailLoading(true);
+    setCardDetailError("");
+    setCardDetail(null);
+    try {
+      const sec = secretNumber.trim();
+      const nm = customerName.trim();
+      const r = await authFetch(
+        `/api/tamween-card-ledger/history?secret_number=${encodeURIComponent(sec)}&name=${encodeURIComponent(nm)}`
+      );
+      const d = await r.json().catch(() => ({} as any));
+      if (!r.ok || d?.error) { setCardDetailError(d?.error || "تعذر تحميل سجل الكارت."); return; }
+      setCardDetail(d);
+    } catch {
+      setCardDetailError("خطأ في الاتصال بالخادم.");
+    } finally {
+      setCardDetailLoading(false);
+    }
+  };
+
 
   // Multi-invoice tabs (فواتير معلقة)
   interface HeldInvoice {
@@ -175,6 +327,8 @@ export default function SalesInvoice({ currentUser, tamweenCustomer, onClearTamw
             setInvoiceNumber(ac.invoiceNumber || "");
             setDate(ac.date || "");
             setActiveTabIndex(ac.activeTabIndex || 0);
+            if (ac.withdrawalChoice === "part" || ac.withdrawalChoice === "later") setWithdrawalChoice(ac.withdrawalChoice);
+            else setWithdrawalChoice("now");
           }
           hasLoadedActiveCart.current = true;
         })
@@ -350,25 +504,33 @@ export default function SalesInvoice({ currentUser, tamweenCustomer, onClearTamw
           if (ps.paymentMethod) setPaymentMethod(ps.paymentMethod);
           if (ps.paymentSource) setPaymentSource(ps.paymentSource);
           if (typeof ps.discount === "number") setDiscount(ps.discount); else setDiscount(0);
-          if (Array.isArray(ps.tamweenCards)) setTamweenCards(ps.tamweenCards); else setTamweenCards([]); setManualCardOpen(false); setManualCardInput("");
+          if (Array.isArray(ps.tamweenCards)) setTamweenCards(ps.tamweenCards); else setTamweenCards([]);
+          // كارت يدوي (مبلغ مكتوب بالإيد) — نرجّعه زي ما هو
+          setManualCardOpen(!!ps.manualCardOpen);
+          setManualCardInput(typeof ps.manualCardInput === "string" ? ps.manualCardInput : "");
           if (typeof ps.breadPoints === "number") setBreadPoints(ps.breadPoints); else setBreadPoints(0);
           if (typeof ps.bonus === "number") setBonus(ps.bonus); else setBonus(0);
           if (typeof ps.paid === "number") setPaid(ps.paid); else setPaid(0);
           setWithdrawalChoice("now");
+          // الفاتورة المؤجّلة اترجعت لوحدها → نمسحها من الزبون بعد الحفظ (مش نسيبها معلّقة)
+          pendingRestoreRef.current = true;
+          // الفاتورة المؤجّلة اترجعت لوحدها — منعرضش تنبيه الصرف القديم فوقها
+          oldSpendKeyRef.current = `${typeof tamweenCustomer.id === "number" ? tamweenCustomer.id : ""}|${tamweenCustomer.secret_number || ""}`;
+          try {
+            setSuccess(
+              `تم نقل بيانات العميل المؤجّلة كاملة للكاشير: ${tamweenCustomer.name || ps.customerName || ""} · سري ${tamweenCustomer.secret_number || ps.secretNumber || ""} · كارت ${(Array.isArray(ps.tamweenCards) ? ps.tamweenCards.length : 0)} بقيمة ${(typeof ps.cardValue === "number" ? ps.cardValue : rawTamweenDiscount).toFixed(2)} ج.م · نقاط ${typeof ps.breadPoints === "number" ? ps.breadPoints : 0}.`
+            );
+          } catch {}
           generateInvoiceProps();
         } else {
           setCart([]);
           setCustomerName(tamweenCustomer.name || "");
           setSecretNumber(tamweenCustomer.secret_number || "");
           setDiscount(0); setTamweenCards([]); setManualCardOpen(false); setManualCardInput(""); setBreadPoints(0); setBonus(0); setPaid(0);
-          if (tamweenCustomer.bread_points > 0) setBreadPoints(tamweenCustomer.bread_points);
-          if (tamweenCustomer.card_value > 0) {
-            const tv = [0, 48.5, 98.5, 148.5, 198.5, 223.5, 248.5, 273.5, 299.5, 323.5, 348.5];
-            const cards: number[] = [];
-            let rem = tamweenCustomer.card_value;
-            for (let i = tv.length - 1; i >= 1; i--) { while (rem >= tv[i] && cards.length < 10) { cards.push(i); rem -= tv[i]; } }
-            setTamweenCards(cards);
-          }
+          // طلب 57 «تتشال وأكتب بإيدي»: الخانات تبدأ فاضية والكابتن يكتب شحنة الشهر بإيده
+          // (المأخوذ بيتحسب من المتاح = الباقي المسجّل + المكتوب — فالفاضي يعني الصرف من الباقي بس)
+          // اختيار جديد (مش استرجاع مؤجّلة) → الشحنة تتحسب مع الحفظ
+          pendingRestoreRef.current = false;
           setWithdrawalChoice("now");
           generateInvoiceProps();
         }
@@ -487,6 +649,20 @@ export default function SalesInvoice({ currentUser, tamweenCustomer, onClearTamw
       const res = await authFetch(`/api/invoices/${invoiceId}`);
       if (res.ok) {
         const { invoice, items } = await res.json();
+        // فاضل بطاقة الزبون دلوقتي (من دفتر البطاقات)
+        let cardRemaining: number | null = null;
+        if ((invoice.tamween_discount || 0) > 0 && (invoice.tamween_customer_id || invoice.secret_number)) {
+          try {
+            const q = invoice.tamween_customer_id
+              ? `id=${invoice.tamween_customer_id}&name=${encodeURIComponent(invoice.customer_supplier_name || "")}`
+              : `secret_number=${encodeURIComponent(invoice.secret_number || "")}&name=${encodeURIComponent(invoice.customer_supplier_name || "")}`;
+            const lr = await authFetch(`/api/tamween-card-ledger?${q}`);
+            if (lr.ok) {
+              const ld = await lr.json();
+              if (!ld.error) cardRemaining = Number(ld.remaining) || 0;
+            }
+          } catch {}
+        }
         setPrintData({
           invoice_number: invoice.invoice_number,
           date: invoice.date,
@@ -498,6 +674,8 @@ export default function SalesInvoice({ currentUser, tamweenCustomer, onClearTamw
           tax: invoice.tax || 0,
           discount: invoice.discount || 0,
           tamweenDiscount: invoice.tamween_discount || 0,
+          cardItems: items.map((it: any) => it.name || it.item_name),
+          cardRemaining,
           breadPoints: invoice.bread_points || 0,
           bonus: invoice.bonus || 0,
           total: invoice.total,
@@ -529,13 +707,15 @@ export default function SalesInvoice({ currentUser, tamweenCustomer, onClearTamw
   const secretInputRef = useRef<HTMLInputElement>(null);
   const breadInputRef = useRef<HTMLInputElement>(null);
   const bonusInputRef = useRef<HTMLInputElement>(null);
+  // الفاتورة المؤجّلة اللي اترجعت من الدفتر (زر «أضيفه للفاتورة») — تتمسح من السيرفر بعد الحفظ
+  const pendingRestoreRef = useRef(false);
 
   const handleSubmitInvoiceRef = useRef<any>(null);
   const clearCartRef = useRef<any>(null);
 
   // Keep refs in sync with state for the tamweenCustomer effect (which runs before state is declared)
-  const stateRef = useRef({ cart: [] as any[], customerName: "", secretNumber: "", tamweenCustomerId: null as number | null, saleType: "retail" as any, paymentMethod: "cash" as any, paymentSource: "cash_register" as any, discount: 0, tamweenCards: [] as number[], breadPoints: 0, bonus: 0, paid: 0, invoiceNumber: "", date: "", activeTabIndex: 0, heldInvoices: [] as any[] });
-  stateRef.current = { cart, customerName, secretNumber, tamweenCustomerId, saleType, paymentMethod, paymentSource, discount, tamweenCards, breadPoints, bonus, paid, invoiceNumber, date, activeTabIndex, heldInvoices };
+  const stateRef = useRef({ cart: [] as any[], customerName: "", secretNumber: "", tamweenCustomerId: null as number | null, saleType: "retail" as any, paymentMethod: "cash" as any, paymentSource: "cash_register" as any, discount: 0, tamweenCards: [] as number[], breadPoints: 0, bonus: 0, paid: 0, invoiceNumber: "", date: "", activeTabIndex: 0, withdrawalChoice: "now" as "now" | "later" | "part", heldInvoices: [] as any[] });
+  stateRef.current = { cart, customerName, secretNumber, tamweenCustomerId, saleType, paymentMethod, paymentSource, discount, tamweenCards, breadPoints, bonus, paid, invoiceNumber, date, activeTabIndex, withdrawalChoice, heldInvoices };
 
   // Flag to prevent save effect from running before DB load completes
   const hasLoadedActiveCart = useRef(false);
@@ -557,7 +737,7 @@ export default function SalesInvoice({ currentUser, tamweenCustomer, onClearTamw
           body: JSON.stringify({
             cart, customerName, secretNumber, saleType, paymentMethod, paymentSource,
             discount, tamweenCards, breadPoints, bonus, paid,
-            invoiceNumber, date, activeTabIndex,
+            invoiceNumber, date, activeTabIndex, withdrawalChoice,
           }),
         }).catch(() => {});
       } else {
@@ -565,7 +745,7 @@ export default function SalesInvoice({ currentUser, tamweenCustomer, onClearTamw
       }
     }, 300);
     return () => clearTimeout(timer);
-  }, [cart, customerName, secretNumber, saleType, paymentMethod, paymentSource, discount, tamweenCards, breadPoints, bonus, paid, invoiceNumber, date, activeTabIndex]);
+  }, [cart, customerName, secretNumber, saleType, paymentMethod, paymentSource, discount, tamweenCards, breadPoints, bonus, paid, invoiceNumber, date, activeTabIndex, withdrawalChoice]);
 
   // Flush active work to DB synchronously on unmount (real tab switch) — the 300ms
   // debounce above is cancelled on unmount, so without this the recall flow would
@@ -583,7 +763,7 @@ export default function SalesInvoice({ currentUser, tamweenCustomer, onClearTamw
               saleType: s.saleType, paymentMethod: s.paymentMethod, paymentSource: s.paymentSource,
               discount: s.discount, tamweenCards: s.tamweenCards, breadPoints: s.breadPoints,
               bonus: s.bonus, paid: s.paid, invoiceNumber: s.invoiceNumber, date: s.date,
-              activeTabIndex: s.activeTabIndex,
+              activeTabIndex: s.activeTabIndex, withdrawalChoice: s.withdrawalChoice,
             }),
           }).catch(() => {});
         }
@@ -715,7 +895,8 @@ export default function SalesInvoice({ currentUser, tamweenCustomer, onClearTamw
         discount: s.discount || 0,
         tamweenCards: [...(s.tamweenCards || [])],
         breadPoints: s.breadPoints || 0,
-        bonus: s.bonus || 0,
+        // فاتورة معلقة (لم تنتهِ) → مفيش حافز، الحافز بيتكتب عند الإنهاء والحفظ النهائي بس
+        bonus: 0,
         paid: s.paid || 0,
         invoiceNumber: s.invoiceNumber || "",
         date: s.date || "",
@@ -761,30 +942,42 @@ export default function SalesInvoice({ currentUser, tamweenCustomer, onClearTamw
 
   const addNewTab = () => {
     const s: any = (stateRef as any)?.current || {};
-    const newIndex = (s.activeTabIndex ?? activeTabIndex) < (s.heldInvoices ?? heldInvoices).length
-      ? (s.heldInvoices ?? heldInvoices).length : (s.heldInvoices ?? heldInvoices).length + 1;
+    const curHeld = (Array.isArray(s.heldInvoices) ? s.heldInvoices : heldInvoices) || [];
+    const curIdx = typeof s.activeTabIndex === "number" ? s.activeTabIndex : activeTabIndex;
+    // الفاتورة الحالية داخل التبويبات المعلقة أصلًا؟ ولو لأ ومفيهاش أصناف مالهاش مكان في الدفع
+    const curInList = curIdx < curHeld.length;
+    const hasData = Array.isArray(s.cart) ? s.cart.length > 0 : false;
+    // رقم التبويب الجديد = بعد ما نحفظ الفاتورة الحالية (لو كانت بره القايمة) + التبويب الفاضي الجديد
+    const newIndex = curInList ? curHeld.length : (hasData ? curHeld.length + 1 : curHeld.length);
     setHeldInvoices(prev => {
       let updated = [...prev];
+      const currentTab = {
+        cart: [...(s.cart || [])],
+        customerName: s.customerName || "",
+        secretNumber: s.secretNumber || "",
+        saleType: s.saleType || "retail",
+        paymentMethod: s.paymentMethod || "cash",
+        paymentSource: s.paymentSource || "cash_register",
+        discount: s.discount || 0,
+        tamweenCards: [...(s.tamweenCards || [])],
+        breadPoints: s.breadPoints || 0,
+        // فاتورة معلقة (لم تنتهِ) → مفيش حافز، الحافز بيتكتب عند الإنهاء والحفظ النهائي بس
+        bonus: 0,
+        paid: s.paid || 0,
+        invoiceNumber: s.invoiceNumber || "",
+        date: s.date || "",
+      };
+      const currentLabel = s.customerName && s.customerName !== "عميل نقدي افتراضي"
+        ? s.customerName
+        : (curInList ? updated[curIdx]?.label : undefined) || `فاتورة ${curIdx + 1}`;
       // Save current tab if it has data — from live ref (never stale closure)
-      if ((s.activeTabIndex ?? activeTabIndex) < updated.length && (Array.isArray(s.cart) ? s.cart.length > 0 : false)) {
-        const curIdx = s.activeTabIndex ?? activeTabIndex;
-        updated[curIdx] = {
-          ...updated[curIdx],
-          cart: [...s.cart],
-          customerName: s.customerName || "",
-          secretNumber: s.secretNumber || "",
-          saleType: s.saleType || "retail",
-          paymentMethod: s.paymentMethod || "cash",
-          paymentSource: s.paymentSource || "cash_register",
-          discount: s.discount || 0,
-          tamweenCards: [...(s.tamweenCards || [])],
-          breadPoints: s.breadPoints || 0,
-          bonus: s.bonus || 0,
-          paid: s.paid || 0,
-          invoiceNumber: s.invoiceNumber || "",
-          date: s.date || "",
-          label: s.customerName && s.customerName !== "عميل نقدي افتراضي" ? s.customerName : updated[s.activeTabIndex ?? activeTabIndex]?.label || `فاتورة ${(s.activeTabIndex ?? activeTabIndex) + 1}`,
-        };
+      if (hasData) {
+        if (curInList && curIdx < updated.length) {
+          updated[curIdx] = { ...updated[curIdx], ...currentTab, label: currentLabel };
+        } else {
+          // الفاتورة الحالية لسه مش مسجّلة في التبويبات → نضيفها بنفسها عشان متفقدش أصنافها
+          updated = [...updated, { id: Date.now(), label: currentLabel, ...currentTab } as HeldInvoice];
+        }
       }
       // Add new empty tab
       const newInv: HeldInvoice = {
@@ -860,8 +1053,8 @@ export default function SalesInvoice({ currentUser, tamweenCustomer, onClearTamw
   };
 
   const generateInvoiceProps = () => {
-    const d = new Date();
-    const formattedDate = d.toISOString().split("T")[0];
+    // تاريخ اليوم بالتوقيت المحلي — toISOString بيرجع UTC وبعد منتصف الليل بيكتب تاريخ امبارح
+    const formattedDate = localDateStr();
     setDate(formattedDate);
 
     const randNum = Math.floor(100000 + Math.random() * 900000);
@@ -960,6 +1153,7 @@ export default function SalesInvoice({ currentUser, tamweenCustomer, onClearTamw
         is_unlimited: product.is_unlimited,
         stock_quantity: product.quantity,
         low_stock_limit: product.low_stock_limit,
+        is_tamween: product.is_tamween || 0,
       };
       setCart([newItem, ...cart]);
       setCartPage(1);
@@ -991,8 +1185,9 @@ export default function SalesInvoice({ currentUser, tamweenCustomer, onClearTamw
   };
 
   const updateCartQty = (index: number, qtyStr: string) => {
-    const qty = parseFloat(qtyStr);
-    if (isNaN(qty) || qty <= 0) return;
+    // الكمية رقم صحيح يبدأ من 1 — مفيش كسور ولا صفر
+    const qty = Math.floor(parseFloat(qtyStr));
+    if (isNaN(qty) || qty < 1) return;
 
     const item = cart[index];
     if (item && item.is_unlimited !== 1 && (item.stock_quantity ?? 0) > 0 && qty > item.stock_quantity!) {
@@ -1075,22 +1270,108 @@ export default function SalesInvoice({ currentUser, tamweenCustomer, onClearTamw
   const subtotal = cart.reduce((add, item) => add + item.total, 0);
   const taxAmount = (subtotal * taxRate) / 100;
   // Tamween card values (multi-select) - sum of all selected cards
-  const tamweenValues = [0, 48.5, 98.5, 148.5, 198.5, 223.5, 248.5, 273.5, 299.5, 323.5, 348.5];
+  const tamweenValues = [0, 48, 98, 148, 198, 223, 248, 273, 298, 323, 348];
   const isManualCard = (c: number) => !(Number.isInteger(c) && c >= 1 && c <= 10);
   const cardValueOf = (c: number) => (isManualCard(c) ? c : (tamweenValues[c] || 0));
   const addManualCard = () => {
     const v = parseFloat(manualCardInput);
     if (isNaN(v) || v <= 0) { setError("أدخل قيمة صحيحة أكبر من صفر"); return; }
+    if (!Number.isInteger(v)) { setError("قيمة الكارت لازم تكون رقم كامل بالجنيه من غير قروش — مثلاً 100 أو 150."); return; }
     if (Number.isInteger(v) && v >= 1 && v <= 10) { setError("دي قيمة بالجنيه مش عدد أفراد — لو عايز عدد أفراد استخدم الكروت الجاهزة"); return; }
     setTamweenCards([...tamweenCards, v]);
     setManualCardInput("");
     setManualCardOpen(false);
     addTamweenItemsToCart();
   };
-  const tamweenDiscount = tamweenCards.reduce((sum, c) => sum + cardValueOf(c), 0);
-  // Total = subtotal + tax - discount - tamween (sum) - breadPoints + bonus
-  // Can be negative when tamween/bread points/bonus are selected before adding products
-  const total = subtotal + taxAmount - discount - tamweenDiscount - breadPoints + bonus;
+  const tamweenGoodsTotal = cart.filter((i) => Number(i.is_tamween) === 1).reduce((s, i) => s + Number(i.total || 0), 0);
+  const rawTamweenDiscount = tamweenCards.reduce((sum, c) => sum + cardValueOf(c), 0);
+  // الجملة: قسم الكارت مقفول — مفيش خصم دعم ولا نقاط خبز في فاتورة الجملة
+  const isWholesale = saleType === "wholesale";
+  // زبون مسجّل على الدفتر: الخصم ما يتجاوزش المتبقي على بطاقته — والباقي يتدفع نقدًا (الزبون الجديد مفيش عليه حد)
+  const isRegisteredCard = !!cardState && cardState.topped > 0;
+  // قيمة البضاعة (التغطية) — الكارت والنقاط يتخصموا كاملين من غير قناع على البضاعة (طلب 8)
+  const goodsValue = Math.max(0, subtotal + taxAmount - discount);
+  // المتاح = الباقي المسجّل + الشحنة المكتوبة (بتتشحن مع الحفظ — طلب 57: يتجمعوا مع الباقي)
+  const cardFunds = (isRegisteredCard ? Math.max(0, Number(cardState?.remaining || 0)) : 0) + Math.max(0, rawTamweenDiscount);
+  // نقاط الخبز: الزبون لازم يكون مسجّل في دفتر الكروت وفيه رصيد كافي
+  const breadBalance = cardState?.breadBalance;
+  const pointsFunds = (breadBalance != null ? Math.max(0, Number(breadBalance)) : 0) + Math.max(0, breadPoints);
+  // صرف جزء: المأخوذ مايكونش أكتر من البضاعة اللي هتتاخد دلوقتي — الباقي (قديم + جديد) يفضل رصيد الزبون
+  const tamweenDiscount = isWholesale ? 0 : withdrawalChoice === "part"
+    ? Math.min(cardFunds, tamweenGoodsTotal, goodsValue)
+    : cardFunds;
+  // صرف جزء: النقاط ما تاخدش إلا الباقي من البضاعة بعد الكارت — عشان (الكارت + النقاط) مع بعض ما يزدوش على البضاعة
+  const breadPointsEff = isWholesale ? 0 : withdrawalChoice === "part"
+    ? Math.min(pointsFunds, Math.max(0, Number((goodsValue - tamweenDiscount).toFixed(2))))
+    : pointsFunds;
+  const breadPointsCapped = withdrawalChoice === "part" && pointsFunds - breadPointsEff > 0.001;
+  // الكارت اتقنع عند المتاح بس (مش عند البضاعة)
+  const cardCapped = tamweenDiscount < cardFunds - 0.001;
+  // المبلغ: البضاعة لازم تكون ≥ الكارت + النقاط — وإلا ناقص بضاعة (أحمر) ويتحرم الحفظ
+  const creditTotal = tamweenDiscount + breadPointsEff;
+  const incompleteGap = Number((goodsValue - creditTotal).toFixed(2));
+  const isIncomplete = incompleteGap < -0.001;
+  const remainder = Math.max(0, incompleteGap);
+  // سطر تفصيل الأخضر: يظهر بس لو فيه كارت/نقاط (زيادة + الحافز)
+  const creditLine = !isIncomplete && creditTotal > 0;
+  // نقاط الخبز: الزبون لازم يكون مسجّل في دفتر الكروت وفيه رصيد كافي
+  const breadUnregistered = breadPointsEff > 0 && !!cardState && breadBalance == null;
+  const breadOverBalance = breadPointsEff > pointsFunds + 0.001;
+  // الصرف الكلي = الكارت هيخلص بعد الفاتورة دي — الحافز بيتضاف في الكروت المصروفة كليًا فقط
+  // الصرف الكلي = الكارت هيخلص بعد الفاتورة دي (نفس حساب السيرفر بالظبط)
+  // الحافز بيتضاف في الكروت المصروفة كليًا فقط — الجزئي بيتحفظ من غيره
+  const cardRemainingAfterSpend =
+    Number(tamweenDiscount) <= 0
+      ? Infinity
+      : (Number(cardState?.remaining || 0) + Math.max(0, rawTamweenDiscount)) - tamweenDiscount;
+  const isFullCardSpend = cardRemainingAfterSpend <= 0.001;
+  // الحافز مسموح مع الصرف الكلي بس — أي حالة تانية نصفّره
+  useEffect(() => {
+    if (!isFullCardSpend && bonus !== 0) setBonus(0);
+  }, [isFullCardSpend, bonus]);
+
+  // ===== الشرط الصريح (عماد 2026-10-04 · تعديل 2026-10-06) =====
+  // لو الفاتورة دي هتصفّي الكارت بالكامل على زبون مسجّل → «صرف في وقت لاحق» بيتشال والصرف بيبقى كليًا
+  // بس «صرف جزئي» فاضل (الطلب 24/أ): الكارت والنقاط بيتقنّعوا عند البضاعة فمفيش التباس
+  const mustFullWithdraw = isRegisteredCard && isFullCardSpend && withdrawalChoice !== "part";
+  useEffect(() => {
+    if (mustFullWithdraw && withdrawalChoice !== "now") setWithdrawalChoice("now");
+  }, [mustFullWithdraw, withdrawalChoice]);
+
+  // ===== حدود السكر والزيت (كروت الأفراد الجاهزة فقط) =====
+  // الفئة → [أقصى سكر, أقصى زيت]
+  const CARD_LIMITS: { [k: number]: [number, number] } = {
+    1: [1, 1], 2: [2, 2], 3: [3, 3], 4: [4, 4], 5: [5, 4],
+    6: [6, 4], 7: [6, 4], 8: [6, 4], 9: [6, 4], 10: [6, 4],
+  };
+  const presetCards = tamweenCards.filter((c) => !isManualCard(c));
+  // التجاوز مسموح لو: مفيش كروت جاهزة مختارة · كارت يدوي · جملة من غير كروت جاهزة
+  const limitsActive = presetCards.length > 0;
+  const isSugarItem = (n: string) => (n || "").includes("سكر");
+  const isOilItem = (n: string) => (n || "").includes("زيت");
+  const sugarQty = cart.filter((i) => isSugarItem(i.name)).reduce((s, i) => s + Number(i.quantity || 0), 0);
+  const oilQty = cart.filter((i) => isOilItem(i.name)).reduce((s, i) => s + Number(i.quantity || 0), 0);
+  // كذا كارت مختار → الحدود بتتجمع (فرد + فرد = سكر 2 وزيت 2) مش أكبر حد
+  const maxSugar = limitsActive ? presetCards.reduce((s, c) => s + (CARD_LIMITS[c]?.[0] ?? 0), 0) : Infinity;
+  const maxOil = limitsActive ? presetCards.reduce((s, c) => s + (CARD_LIMITS[c]?.[1] ?? 0), 0) : Infinity;
+  // مسحوب سابقًا في الشهر الحالي على نفس الزبون (صرف جزئي بعد جزئي) — الحدود بتتجمع
+  const prevSugar = Number(cardState?.monthUsed?.sugar || 0);
+  const prevOil = Number(cardState?.monthUsed?.oil || 0);
+  const totalSugar = prevSugar + sugarQty;
+  const totalOil = prevOil + oilQty;
+  const sugarOver = limitsActive && totalSugar > maxSugar + 0.001;
+  const oilOver = limitsActive && totalOil > maxOil + 0.001;
+  const atBothCaps = limitsActive && !sugarOver && !oilOver && totalSugar >= maxSugar - 0.001 && totalOil >= maxOil - 0.001;
+  const cardGap = atBothCaps ? Number((tamweenDiscount - tamweenGoodsTotal).toFixed(2)) : 0;
+  const cardLimitError = sugarOver
+    ? `الحد الأقصى لسكر على مجموع الكروت المختارة ${maxSugar} — عندك ${totalSugar} (مسحوب سابقًا ${prevSugar} + الحالي ${sugarQty}). قلّل الكمية أو زوّد كارت.`
+    : oilOver
+    ? `الحد الأقصى لزيت على مجموع الكروت المختارة ${maxOil} — عندك ${totalOil} (مسحوب سابقًا ${prevOil} + الحالي ${oilQty}). قلّل الكمية أو زوّد كارت.`
+    : cardGap > 0.001
+    ? `السكر والزيت وصلوا لأقصى حد — لازم تكمّل قيمة الكارت ${tamweenDiscount.toFixed(2)} ج.م ببضاعة متعلمة "بند تمويني" (ناقص ${cardGap.toFixed(2)} ج.م). البضاعة الحرة ممنوعة لحد ما تكتمل.`
+    : "";
+  // Total = الزيادة عن الكارت والنقاط (لما المبلغ يكتمل) + الحافز — والمبلغ غير المكتمل بيظهر بالسالب في المربع الأحمر
+  const total = remainder + bonus;
   const remaining = paymentMethod === "credit"
     ? Math.max(0, total - paid)
     : (paid > total ? paid - total : total - paid);
@@ -1120,7 +1401,8 @@ export default function SalesInvoice({ currentUser, tamweenCustomer, onClearTamw
             return {
               ...cartItem,
               price: chosenPrice,
-              total: cartItem.quantity * chosenPrice
+              total: cartItem.quantity * chosenPrice,
+              is_tamween: matched.is_tamween || 0
             };
           }
           return cartItem;
@@ -1132,6 +1414,22 @@ export default function SalesInvoice({ currentUser, tamweenCustomer, onClearTamw
       adjustCartPrices();
     }
   }, [saleType]);
+
+  // ===== قسم الكارت في الجملة (عماد 2026-10-04) =====
+  // في وضع «جملة» بيتشال قسم الكارت كامل: شريط الدفتر + اختيار الكارت + الرقم السري + نقاط الخبز + خصم الدعم
+  useEffect(() => {
+    if (saleType !== "wholesale") return;
+    if (tamweenCards.length > 0) setTamweenCards([]);
+    if (manualCardOpen) setManualCardOpen(false);
+    if (manualCardInput) setManualCardInput("");
+    if (breadPoints !== 0) setBreadPoints(0);
+    if (secretNumber) setSecretNumber("");
+    if (withdrawalChoice !== "now") setWithdrawalChoice("now");
+    if (cardState) setCardState(null);
+    if (cardMismatch) setCardMismatch(null);
+    if (cardWithdrawnThisMonth) setCardWithdrawnThisMonth(null);
+    if (oldSpend) setOldSpend(null);
+  }, [saleType, tamweenCards, manualCardOpen, manualCardInput, breadPoints, secretNumber, withdrawalChoice, cardState, cardMismatch, cardWithdrawnThisMonth, oldSpend]);
 
   const saveReceiptAsImage = async () => {
     const node = document.getElementById("thermal-receipt-printable-area");
@@ -1183,6 +1481,109 @@ if (true) {
 
   const [errorTick, setErrorTick] = useState(0);
 
+  // مربع «من فضلك أضف الحافز» — بيفتح لوحده بس لو الإجمالي طلع صفر
+  // (التغطية كاملة بالكارت ونقاط الخبز) → الحافز بيدخل الدرج صافي وبعدها نكمّل الحفظ والطباعة
+  const [bonusPromptOpen, setBonusPromptOpen] = useState(false);
+  const [bonusPromptValue, setBonusPromptValue] = useState("");
+  const [resumeAfterBonus, setResumeAfterBonus] = useState(false);
+
+  const confirmBonusPrompt = () => {
+    const v = Number(bonusPromptValue);
+    if (!Number.isFinite(v) || v <= 0) { setBonusPromptValue(""); return; }
+    setBonus(v);
+    setBonusPromptOpen(false);
+    setResumeAfterBonus(true);
+  };
+
+  // الحافز اتضاف → نكمّل الحفظ في نفس اللحظة (بعد ما الحالة والإجمالي يتحدّثوا)
+  useEffect(() => {
+    if (!resumeAfterBonus) return;
+    setResumeAfterBonus(false);
+    handleSubmitInvoice();
+  }, [resumeAfterBonus, bonus]);
+
+  // حفظ المصروف السريع — بيتسجّل في بنود المصروفات ويخصم من المصدر المختار فوراً
+  const saveCashierExpense = async () => {
+    setExpenseError("");
+    const src = expenseForm.payment_source;
+    const amountVal = Number(expenseForm.amount) || 0;
+    const cat = String(expenseForm.category || "").trim();
+    const dateStr = String(expenseForm.date || "").trim();
+    const notes = expenseForm.notes.trim();
+    const title = expenseForm.title.trim();
+    const srcLabel = src === "cash_register" ? "درج الكاشير" : "الخزنة الرئيسية";
+
+    // ── كل الحقول لازم تكتمل قبل ما نقبل التسجيل ──
+    if (src !== "cash_register" && src !== "main_safe") {
+      setExpenseError("اختار مصدر الدفع (درج الكاشير أو الخزنة الرئيسية).");
+      return;
+    }
+    if (!(amountVal > 0)) {
+      setExpenseError("اكتب المبلغ (أكبر من صفر).");
+      return;
+    }
+    if (!title) {
+      setExpenseError("اكتب اسم مستلم النقديه في عنوان المصروف.");
+      return;
+    }
+    if (!cat) {
+      setExpenseError("اختار تصنيف المصروف من القائمة.");
+      return;
+    }
+    if (!dateStr) {
+      setExpenseError("حدد تاريخ الإنفاق.");
+      return;
+    }
+    if (!notes) {
+      setExpenseError("اكتب ملاحظات المصروف (سبب السحب) — الحقل ده مطلوب.");
+      return;
+    }
+
+    setExpenseSaving(true);
+    try {
+      let ok = false;
+      let failMsg = "";
+      let doneMsg = "";
+
+      {
+        // ── مصروف عادي: خروج من الخزنة/الدرج ──
+        const res = await authFetch("/api/expenses", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            payment_source: src,
+            title,
+            amount: amountVal,
+            category: cat,
+            date: dateStr,
+            notes,
+            logCreator: currentUser?.name || "الكاشير",
+          }),
+        });
+        const data = await res.json().catch(() => ({} as any));
+        ok = res.ok && !!data.success;
+        failMsg = data?.error || "تعذر حفظ المصروف — جرّب تاني.";
+        doneMsg = `تم تسجيل مصروف ${amountVal.toFixed(2)} ج.م (${cat}) من ${srcLabel} — المستلم: ${title}`;
+      }
+
+      if (!ok) {
+        setExpenseError(failMsg);
+        return;
+      }
+
+      setExpenseOpen(false);
+      setExpenseError("");
+      setExpenseForm((f) => ({ ...f, title: "", amount: 0, notes: "" }));
+      setSuccess(doneMsg);
+      setTimeout(() => setSuccess(""), 5000);
+      try { if (barcodeInputRef.current) barcodeInputRef.current.focus(); } catch {}
+    } catch {
+      setExpenseError("خطأ في الاتصال بالخادم.");
+    } finally {
+      setExpenseSaving(false);
+    }
+  };
+
   const handleSubmitInvoice = async () => {
     setError("");
     setErrorTick((t) => t + 1);
@@ -1193,20 +1594,118 @@ if (true) {
       return;
     }
 
-    // حماية محاسبية: الإجمالي النهائي يجب أن يكون بالموجب دائماً
-    if (total <= 0) {
-      setError("لا يمكن حفظ الفاتورة — الإجمالي النهائي يجب أن يكون بالموجب. راجع قيم الدعم والخصومات.");
+    // نتيجة الدفتر المعروضة لازم تكون لنفس الاسم+السري المكتوبين دلوقتي —
+    // لو الاستعلام الجديد لسه مخلصش، نستنى بدل ما نحكم بنتيجة قديمة لاسم تاني
+    {
+      const secNow = secretNumber.trim();
+      const nmNow = customerName.trim();
+      if (saleType !== "wholesale" && secNow.length >= 1 && nmNow && cardLookupKeyRef.current !== `${secNow}|${nmNow}`) {
+        setError("استنى لحظة — بنتأكد من بيانات الكارت المكتوبة دلوقتي… دوس «حفظ» تاني.");
+        return;
+      }
+    }
+
+    // ── صرف الشهر ده: رفض البيع له الشهر ده بالكامل ──
+    // المنع ده ساري بس لو هو لنفس الاسم المكتوب دلوقتي — نتيجة قديمة لاسم تاني متوقفش الفاتورة
+    if (cardWithdrawnThisMonth && customerName.trim() && cardWithdrawnThisMonth.name === customerName.trim()) {
+      setError(`⛔ تم الصرف هذا الشهر (${cardWithdrawnThisMonth.month}) للزبون ${cardWithdrawnThisMonth.name} — البيع مرفوض له الشهر ده. امسح الاسم والرقم السري أو اختار «+ عميل جديد».`);
       return;
     }
 
-    // كارت تموين: لا موافقة على البيع غير لما الاسم والرقم السري والحافز يكونوا معمّلين (نقاط الخبز مش شرط)
-    if (Number(tamweenDiscount) > 0 || tamweenCards.length > 0) {
+    // المبلغ لازم يكتمل (مفيش اقتطاع) — بس `part` يتخطى الفحص
+    // صرف جزئي: الكارت/النقاط تتقنع عند البضاعة بس الفاتورة تتسجّل من غير `ناقص بضاعة`
+    if (isIncomplete && !(withdrawalChoice === "part")) {
+      setError(
+        `ناقص ${Math.abs(incompleteGap).toFixed(2)} ج.م بضاعة — الكارت والنقاط ${creditTotal.toFixed(2)} ج.م أكبر من البضاعة ${goodsValue.toFixed(2)} ج.م.`
+      );
+      return;
+    }
+
+    // الإجمالي صفر (التغطية كاملة بالكارت/النقاط) → نطلب الحافز ونكمل الحفظ والطباعة
+    // الحافز بيتطلب بس مع الصرف الكلي — الصرف الجزئي بيتحفظ من غيره
+    if (total <= 0 && isFullCardSpend) {
+      setBonusPromptValue("");
+      setBonusPromptOpen(true);
+      return;
+    }
+
+    // كارت تموين أو نقاط خبز: لا موافقة على البيع غير لما الاسم والرقم السري (والحافز مع الصرف الكلي) يكونوا معمّلين
+    const needsCustomerIdentity = Number(tamweenDiscount) > 0 || tamweenCards.length > 0 || Number(rawTamweenDiscount) > 0 || breadPointsEff > 0 || Number(breadPoints) > 0;
+    if (needsCustomerIdentity) {
       const missingFields: string[] = [];
       if (!customerName.trim()) missingFields.push("اسم العميل");
       if (!secretNumber.trim()) missingFields.push("الرقم السري");
-      if (!(Number(bonus) > 0)) missingFields.push("الحافز");
+      if (isFullCardSpend && !(Number(bonus) > 0)) missingFields.push("الحافز");
       if (missingFields.length > 0) {
-        setError(`ملئ الحقول: فيه كارت تموين في الفاتورة ولازم تكمل ${missingFields.join(" + ")} قبل الموافقة على البيع. (نقاط الخبز مش شرط)`);
+        setError(`ملئ الحقول: فيه كارت تموين أو نقاط خبز في الفاتورة ولازم تكمل ${missingFields.join(" + ")} قبل الموافقة على البيع.`);
+        return;
+      }
+      // النقاط ما تتجاوزش المتاح (الباقي + المكتوب — بيتشحن مع الحفظ)
+      if (breadOverBalance) {
+        setError(
+          `النقاط المتاحة للزبون ${customerName.trim()} هي ${pointsFunds.toFixed(2)} ج.م فقط (رصيد + مكتوب) — قلّل النقاط (${breadPointsEff.toFixed(2)}) أو استخدم «صرف جزئي».`
+        );
+        return;
+      }
+      // الرقم السري مش تابع للاسم المكتوب (الأرقام السرية بتتكرر) — نمنع الحفظ هنا بدل ما نستنى ردّ السيرفر
+      if (cardMismatch) {
+        setError(cardMismatch);
+        return;
+      }
+    }
+
+    // حدود السكر والزيت + اكتمال قيمة الكارت ببضاعة "بند تمويني" (كروت جاهزة فقط)
+    if (cardLimitError) {
+      setError(cardLimitError);
+      return;
+    }
+
+    // قواعد البيع بالبند التمويني: القطاعي = بضاعة حرة بس (كارت = كارت مربوط بزبون) · الجملة مفتوح بس تنبيه لو بدون كارت
+    const tamweenItems = cart.filter((it) => Number(it.is_tamween) === 1);
+    if (tamweenItems.length > 0) {
+      const hasCard = tamweenCards.length > 0 || tamweenDiscount > 0;
+      if (saleType === "retail" && !hasCard) {
+        const names = [...new Set(tamweenItems.map((i) => i.name))].join(" + ");
+        setError(
+          `البند التمويني (${names}) ممنوع في البيع القطاعي بدون كارت تموين — اختار كارت التموين أو حوّل الفاتورة لجملة.`
+        );
+        return;
+      }
+      if (saleType === "wholesale") {
+        const lines = tamweenItems
+          .map((it) => `• ${it.name}: ${Number(it.quantity)} × ${Number(it.price).toFixed(2)} = ${Number(it.total || 0).toFixed(2)} ج.م`)
+          .join("\n");
+        const go = confirm(
+          `⚠️ تأكيد سعر البند التمويني في الجملة!\n\nالأسعار اللي هتتباع بيها:\n${lines}\n\nهل أنت متأكد من سعر كل صنف تمويني؟ لو ناسي السعر، اضغط «إلغاء» وارجع عدّل قبل البيع.\n\n«موافق» = السعر مظبوط والبيع يتم · «إلغاء» = رجوع لتعديل`
+        );
+        try { hardRefocus(); } catch {}
+        if (!go) return;
+      }
+    }
+
+    // شرط صريح: الفاتورة هتصفّي الكارت → صرف كلي إجباري، مفيش جزئي ولا لاحق
+    if (mustFullWithdraw && withdrawalChoice !== "now") {
+      setWithdrawalChoice("now");
+      setError("الكارت هيخلص في الفاتورة دي — الصرف لازم يكون كليًا الآن. مفيش «صرف جزئي» ولا «صرف في وقت لاحق» لعدم الالتباس.");
+      return;
+    }
+
+    // صرف جزء = صرف جزء من كارت الزبون والباقي يفضل عليه
+    if (withdrawalChoice === "part") {
+      if (tamweenCards.length === 0) {
+        setError("صرف جزء بيشتغل مع كارت تموين — اختار الكارت الأول، أو استخدم «صرف الآن».");
+        return;
+      }
+      if (tamweenGoodsTotal <= 0) {
+        setError("صرف جزء: مفيش بضاعة تموينية في السلة — ضيف البضاعة اللي هتاخد دلوقتي من الكارت (سكر/زيت/مكرونة...).");
+        return;
+      }
+      if (tamweenDiscount <= 0) {
+        setError("اختار قيمة كارت تموين لصرف جزء منها.");
+        return;
+      }
+      if (!customerName.trim() || !secretNumber.trim()) {
+        setError("صرف جزء: دخل اسم العميل والرقم السري الأول عشان الصرف يتسجّل على بطاقته.");
         return;
       }
     }
@@ -1254,16 +1753,25 @@ if (true) {
       tax: taxAmount,
       discount,
       tamween_discount: tamweenDiscount,
-      bread_points: breadPoints,
+      bread_points: breadPointsEff,
+      // قيمة النقاط المكتوبة (الشحنة الجديدة — بتتجمع فوق الباقي مع الحفظ · طلب 57)
+      bread_points_raw: Math.max(0, breadPoints),
+      // البيع المسترجع من «مؤجّلة» اتشحن وقت التعليق → السيرفر مايشحنش تاني
+      held_restore: pendingRestoreRef.current === true,
       bonus: bonus,
       total,
       paid: paymentMethod === "credit" ? Math.min(paid, total) : total,
       remaining: paymentMethod === "credit" ? Math.max(0, total - paid) : 0,
       items: cart,
       created_by: currentUser?.name || "الكاشير",
-      payment_method: paymentMethod,
+      // الدفع نقداً/آجل فقط — أي قيمة قديمة (انستاباي/فيزا/محفظة) بتتسجّل كاش
+      payment_method: paymentMethod === "credit" ? "credit" : "cash",
       tamween_customer_id: tamweenCustomerId,
-      secret_number: secretNumber
+      secret_number: secretNumber,
+      // كروت الأفراد الجاهزة المختارة — السيرفر بيراجع بيها حدود السكر والزيت
+      preset_cards: presetCards,
+      // قيمة الكارت المختار كاملة — السيرفر بيستخدمها في شحن كارت زبون جديد (الصرف الجزئي بيخلي الباقي)
+      card_value_raw: rawTamweenDiscount
     };
 
     setLoading(true);
@@ -1276,20 +1784,32 @@ if (true) {
 
       const result = await response.json();
       if (response.ok && result.success) {
-        setSuccess("تم حفظ الفاتورة وخصم المخزون بنجاح.");
+        if (withdrawalChoice === "part") {
+          const remCardAfter = Math.max(0, (Number(cardState?.remaining || 0) + (pendingRestoreRef.current ? 0 : Math.max(0, rawTamweenDiscount))) - tamweenDiscount);
+          const remPtsAfter = Math.max(0, pointsFunds - breadPointsEff);
+          const ptsPart = breadPointsEff > 0 ? ` + ${breadPointsEff.toFixed(2)} ج.م نقاط خبز` : "";
+          setSuccess(`تم صرف جزء — خُصم ${tamweenDiscount.toFixed(2)} ج.م${ptsPart} · الباقي للعميل: كارت ${remCardAfter.toFixed(2)} + نقاط ${remPtsAfter.toFixed(2)} = ${(remCardAfter + remPtsAfter).toFixed(2)} ج.م.`);
+        } else if (mustFullWithdraw) {
+          const ptsFull = breadPointsEff > 0 ? ` + ${breadPointsEff.toFixed(2)} ج.م نقاط خبز` : "";
+          setSuccess(`تم الصرف الكلي — خُصم ${tamweenDiscount.toFixed(2)} ج.م${ptsFull} وصُفّر كارت العميل بالكامل.`);
+        } else {
+          setSuccess("تم حفظ الفاتورة وخصم المخزون بنجاح.");
+        }
         setPrintData({
           invoice_number: invoiceNumber,
           date,
           arabicDateStr,
           customer_name: customerName,
           payment_source: paymentSource,
-          payment_method: paymentMethod,
+          payment_method: paymentMethod === "credit" ? "credit" : "cash",
           sale_type: saleType,
           subtotal,
           tax: taxAmount,
           discount,
           tamweenDiscount: tamweenDiscount,
-          breadPoints: breadPoints,
+          cardItems: cart.map((i: any) => i.name),
+          cardRemainingAfter: Math.max(0, (Number(cardState?.remaining || 0) + (pendingRestoreRef.current ? 0 : Math.max(0, rawTamweenDiscount))) - tamweenDiscount),
+          breadPoints: breadPointsEff,
           bonus: bonus,
           total,
           paid,
@@ -1305,10 +1825,12 @@ if (true) {
         // Auto-save customer + set withdrawal status (فقط لو بيستخدم بطاقة تموين)
         if (secretNumber && customerName && tamweenDiscount > 0) {
           try {
-            const existingRes = await authFetch(`/api/tamween-customers/by-secret/${encodeURIComponent(secretNumber)}`);
+            const existingRes = await authFetch(`/api/tamween-customers/by-secret/${encodeURIComponent(secretNumber)}?name=${encodeURIComponent(customerName.trim())}`);
             const existing = await existingRes.json();
             let customerId = existing?.id;
-            if (!existing) {
+            if (existing?.mismatch) {
+              setError(existing.message || "الاسم والرقم السري مش مطابقين لنفس الزبون.");
+            } else if (!existing) {
               const newRes = await authFetch("/api/tamween-customers", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -1316,21 +1838,10 @@ if (true) {
                   name: customerName,
                   secret_number: secretNumber,
                   phone: "",
-                  card_value: tamweenDiscount || 0,
-                  bread_points: breadPoints || 0,
-                  pending_sale: {
-                    cart: [...cart],
-                    customerName,
-                    secretNumber,
-                    saleType,
-                    paymentMethod,
-                    paymentSource,
-                    discount,
-                    tamweenCards: [...tamweenCards],
-                    breadPoints,
-                    bonus,
-                    paid,
-                  },
+                  // للزبون الجديد: الكارت بيتسعّل بقيته كاملة (مش قيمة الخصم) عشان الباقي يفضل له في الصرف الجزئي
+                  card_value: rawTamweenDiscount || tamweenDiscount || 0,
+                  // الفاتورة اتحفظت والبضاعة خرجت → نقاط الخبز بتخصم من السيرفر وقت الحفظ (وزبون جديد مفيش عنده مؤجّل)
+                  pending_sale: null,
                 }),
               });
               const newData = await newRes.json();
@@ -1343,30 +1854,22 @@ if (true) {
                   name: existing.name,
                   secret_number: existing.secret_number,
                   phone: existing.phone || "",
-                  card_value: tamweenDiscount || 0,
-                  bread_points: breadPoints || 0,
-                  pending_sale: {
-                    cart: [...cart],
-                    customerName: existing.name,
-                    secretNumber: existing.secret_number,
-                    saleType,
-                    paymentMethod,
-                    paymentSource,
-                    discount,
-                    tamweenCards: [...tamweenCards],
-                    breadPoints,
-                    bonus,
-                    paid,
-                  },
+                  // المسجّل مايتغيرش هنا — الصرف والشحن متسجّلين في الدفتر من السيرفر
+                  card_value: existing.card_value ?? 0,
+                  // لو الفاتورة دي هي الفاتورة المؤجّلة اللي اترجعت من الدفتر → نمسحها بعد الحفظ
+                  // (غير كده مانلمسش المؤجّل — ممكن يكون مؤجّل تاني مش ده)
+                  ...(pendingRestoreRef.current ? { pending_sale: null } : {}),
                 }),
               });
             }
             if (customerId && withdrawalChoice) {
+              // "part" → activate: الحالة تفضل «later» والمتبقي رصيد يُصرف في زيارة جاية
               const endpoint = withdrawalChoice === "now" ? "withdraw-now" : "activate";
               await authFetch(`/api/tamween-customers/${customerId}/${endpoint}`, { method: "POST" });
             }
           } catch {}
         }
+        pendingRestoreRef.current = false;
 
         setLastRemoved(null);
         setCart([]);
@@ -1462,6 +1965,19 @@ if (true) {
   };
 
   handleSubmitInvoiceRef.current = handleSubmitInvoice;
+
+  // «دين لينا» مع بعض و«دين علينا» مع بعض — الزبون ليه دين علينا/لنا، والمورّد العكس
+  const settleInGroup = (p: any) => {
+    const b = Number(p.balance || 0);
+    if (p.kind === "customer") return settleDir === "deposit" ? b > 0.001 : b < -0.001;
+    return settleDir === "deposit" ? b < -0.001 : b > 0.001;
+  };
+
+  const settleBadge = (p: any) => {
+    const b = Number(p.balance || 0);
+    if (p.kind === "customer") return b > 0.001 ? `عليه ${b.toFixed(2)}` : `عنده ${Math.abs(b).toFixed(2)}`;
+    return b > 0.001 ? `علينا ${b.toFixed(2)}` : `محفوظ ${Math.abs(b).toFixed(2)}`;
+  };
   clearCartRef.current = clearCart;
   handleHoldInvoiceRef.current = handleHoldInvoice;
   undoRemoveRef.current = undoRemove;
@@ -1486,6 +2002,162 @@ if (true) {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // تحميل تصنيفات المصروف من نفس مصدر التقارير — يتحدّث مع كل فتح لنافذة المصروف
+  const loadExpenseCats = async (): Promise<ExpenseCat[]> => {
+    try {
+      const res = await authFetch("/api/expense-categories");
+      if (res.ok) {
+        const d = await res.json();
+        if (Array.isArray(d?.categories) && d.categories.length) {
+          setExpenseCats(d.categories);
+          return d.categories;
+        }
+      }
+    } catch {
+      /* السيرفر مش متاح — نكمّل بالقائمة الاحتياطية */
+    }
+    return EXPENSE_CATS_FALLBACK;
+  };
+
+  const openExpenseModal = async () => {
+    const cats = await loadExpenseCats();
+    setExpenseForm({
+      payment_source: paymentSource,
+      title: "",
+      amount: 0,
+      category: cats.some((c) => c.value === expenseForm.category) ? expenseForm.category : cats[0].value,
+      date: new Date().toISOString().split("T")[0],
+      notes: "",
+    });
+    setExpenseError("");
+    setExpenseOpen(true);
+  };
+
+  const openSettle = async () => {
+    setSettleQuery("");
+    setSettleSelected(null);
+    setSettleForm({ payment_source: paymentSource, amount: 0, note: "" });
+    setSettleError("");
+    setSettleLoading(true);
+    setSettleOpen(true);
+    try {
+      const [a, s] = await Promise.all([
+        authFetch("/api/accounts").then((r) => (r.ok ? r.json() : null)).catch(() => null),
+        authFetch("/api/accounts/suppliers").then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      ]);
+      const cust = (Array.isArray(a?.accounts) ? a.accounts : []).map((x: any) => ({
+        kind: "customer" as const,
+        key: `c:${x.key ?? x.name}`,
+        name: String(x.name || ""),
+        phone: String(x.phone || ""),
+        secret_number: String(x.secret_number || ""),
+        balance: Number(x.balance || 0),
+        ref: x,
+      }));
+      const sup = (Array.isArray(s?.suppliers) ? s.suppliers : []).map((x: any) => ({
+        kind: "supplier" as const,
+        key: `s:${x.key ?? x.id ?? x.name}`,
+        name: String(x.name || ""),
+        phone: String(x.phone || ""),
+        secret_number: "",
+        balance: Number(x.balance || 0),
+        ref: x,
+      }));
+      setSettleAccounts([...cust, ...sup]);
+    } catch {
+      setSettleAccounts([]);
+    } finally {
+      setSettleLoading(false);
+    }
+  };
+
+  // أكبر من صفر = الزبون ليّا عليه (تحصيل) • أقل من صفر = فلوسه عندي (ردّ فلوس)
+  const settleBalance = settleSelected ? Number(settleSelected.balance || 0) : 0;
+  const settleDirection = settleBalance > 0.001 ? "in" : settleBalance < -0.001 ? "out" : "zero";
+
+  const settleResults = React.useMemo(() => {
+    const q = settleQuery.trim().toLowerCase();
+    return settleAccounts
+      .filter(settleInGroup)
+      .filter((p: any) =>
+        !q ||
+        String(p.name || "").toLowerCase().includes(q) ||
+        String(p.secret_number || "").includes(q) ||
+        String(p.phone || "").includes(q)
+      )
+      .sort((x: any, y: any) => Math.abs(Number(y.balance || 0)) - Math.abs(Number(x.balance || 0)));
+  }, [settleAccounts, settleQuery, settleDir]);
+
+  const submitSettle = async () => {
+    if (!settleSelected || settleDirection === "zero") return;
+    const amt = Number(settleForm.amount);
+    if (!(amt > 0)) {
+      setSettleError("اكتب مبلغ أكبر من صفر.");
+      return;
+    }
+    const max = Math.abs(settleBalance);
+    if (amt > max + 0.001) {
+      setSettleError(`المبلغ أكبر من المتاح (${max.toFixed(2)} ج.م).`);
+      return;
+    }
+    setSettleSaving(true);
+    setSettleError("");
+    try {
+      const isCustomer = settleSelected.kind === "customer";
+      // «دين لينا» = تحصيل من الزبون أو ردّ مقدّم من المورّد (يزوّد الخزنة) · «دين علينا» = ردّ للزبون أو سداد للمورّد (يخصمها)
+      const type = isCustomer
+        ? settleDir === "deposit" ? "payment" : "refund"
+        : settleDir === "deposit" ? "refund" : "payment";
+      const url = isCustomer ? "/api/accounts/ledger" : "/api/accounts/supplier-ledger";
+      const body: any = isCustomer
+        ? {
+            tamween_customer_id: settleSelected.ref?.tamween_customer_id ?? null,
+            customer_name: settleSelected.name,
+            type,
+            amount: amt,
+            note: settleForm.note,
+            user_name: currentUser?.name || "الكاشير",
+            payment_source: settleForm.payment_source,
+          }
+        : {
+            supplier_id: settleSelected.ref?.id ?? null,
+            supplier_name: settleSelected.name,
+            type,
+            amount: amt,
+            note: settleForm.note,
+            user_name: currentUser?.name || "الكاشير",
+            payment_source: settleForm.payment_source,
+          };
+      const r = await authFetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const d = await r.json().catch(() => ({} as any));
+      if (!r.ok || d?.error) {
+        setSettleError(d?.error || "تعذر تنفيذ العملية.");
+        return;
+      }
+      const srcLabel = settleForm.payment_source === "cash_register" ? "درج الكاشير" : "الخزنة الرئيسية";
+      const nm = settleSelected.name;
+      await openSettle();
+      setSuccess(
+        isCustomer
+          ? type === "payment"
+            ? `تم تحصيل ${amt.toFixed(2)} ج.م من الزبون ${nm} وإضافتها لـ${srcLabel}.`
+            : `تم ردّ ${amt.toFixed(2)} ج.م للزبون ${nm} وخصمها من ${srcLabel}.`
+          : type === "payment"
+          ? `تم سداد ${amt.toFixed(2)} ج.م للمورّد ${nm} وخصمها من ${srcLabel}.`
+          : `تم ردّ مقدّم ${amt.toFixed(2)} ج.م من المورّد ${nm} وإضافته لـ${srcLabel}.`
+      );
+      setTimeout(() => setSuccess(""), 5000);
+    } catch {
+      setSettleError("تعذر تنفيذ العملية.");
+    } finally {
+      setSettleSaving(false);
+    }
+  };
+
   const handleManualPrint = async () => {
     await saveReceiptAsImage();
   };
@@ -1493,8 +2165,8 @@ if (true) {
   return (
     <div className="flex-1 min-h-0 flex flex-col w-full space-y-1 select-none font-sans" id="printable-sales" style={{ direction: "rtl" }}>
       
-      {/* Top Header — مضغوط في سطر واحد */}
-      <div className="bg-[#c3c6bb] px-2 py-1 border border-[#222222] flex items-center justify-between gap-2 shrink-0">
+      {/* Top Header — مضغوط في سطر واحد (فيه «+ عميل جديد» ورقم الفاتورة لما مفيش تبويبات معلقة — علشان نشيل سطر فاضي من فوق) */}
+      <div className="bg-[#c3c6bb] px-2 py-0.5 border border-[#222222] flex items-center justify-between gap-2 shrink-0">
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <h2 className="text-sm font-extrabold text-[#000000] flex items-center gap-1.5 shrink-0">
             <Monitor size={15} strokeWidth={1.5} />
@@ -1505,35 +2177,79 @@ if (true) {
           </p>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        {heldInvoices.length === 0 && (
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={addNewTab}
+              className="px-3 py-1.5 text-xs font-bold bg-[#27ae60] hover:bg-[#219a52] text-white border border-[#27ae60] cursor-pointer shrink-0 transition-colors"
+              title="فاتورة جديدة"
+            >
+              + عميل جديد
+            </button>
+            <span className="text-[10px] text-[#555555] font-bold shrink-0">
+              الفاتورة الحالية: <span className="font-mono text-[#000000]">{invoiceNumber}</span>
+            </span>
+          </div>
+        )}
+
+        <div className="flex items-center gap-1.5 shrink-0">
           <button
             type="button"
-            onClick={() => onNavigateToTab?.("accounts")}
-            className="h-6 px-2.5 flex items-center justify-center gap-1.5 bg-[#065f46] hover:bg-[#047857] text-white font-bold text-xs border border-[#065f46] transition-colors cursor-pointer"
+            onClick={openSettle}
+            className="h-5 pl-1.5 pr-2 flex items-center justify-center gap-1 bg-[#065f46] hover:bg-[#047857] text-white font-bold text-[10px] border border-[#065f46] transition-colors cursor-pointer"
+            title="سداد دين زبون — تحصيل من الخزنة أو ردّ فلوس"
           >
-            <Wallet size={13} />
-            <span>حسابات وديون</span>
+            <Wallet size={11} strokeWidth={2} />
+            <span>سداد دين</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setDrawerCloseOpen(true)}
+            className="h-5 pl-1.5 pr-2 flex items-center justify-center gap-1 bg-[#222222] hover:bg-[#000000] text-[#c3c6bb] font-bold text-[10px] border border-[#222222] transition-colors cursor-pointer"
+            title="تقفيل اليومية — عدّ فلوس الدرج ومقارنة المتوقع"
+          >
+            <LockKeyhole size={11} strokeWidth={2} />
+            <span>تقفيل اليومية</span>
+          </button>
+          <button
+            type="button"
+            onClick={openExpenseModal}
+            className="h-5 pl-1.5 pr-2 flex items-center justify-center gap-1 bg-[#e67e22] hover:bg-[#d35400] text-white font-bold text-[10px] border border-[#d35400] transition-colors cursor-pointer"
+            title="تسجيل مصروف (نثريات / عمالة / ضيافة ...)"
+          >
+            <Receipt size={11} strokeWidth={2} />
+            <span>مصروفات</span>
           </button>
           <button
             type="button"
             onClick={loadInvoiceHistory}
-            className="h-6 px-2.5 flex items-center justify-center gap-1.5 bg-[#b8bcb2] hover:bg-[#888888] text-[#000000] font-bold text-xs border border-[#888888] transition-colors cursor-pointer"
+            className="h-5 pl-1.5 pr-2 flex items-center justify-center gap-1 bg-[#b8bcb2] hover:bg-[#888888] text-[#000000] font-bold text-[10px] border border-[#888888] transition-colors cursor-pointer"
           >
-            <Search size={13} />
+            <Search size={11} strokeWidth={2} />
             <span>سجل الفواتير</span>
           </button>
-          <div className="bg-[#222222] text-[#c3c6bb] px-2 py-0.5 text-[11px] font-bold shrink-0">
+          <div className="bg-[#222222] text-[#c3c6bb] px-2 py-0.5 text-[10px] font-bold shrink-0">
             الكاشير: نشط
           </div>
         </div>
       </div>
 
-      {error && (
-        <div key={`${errorTick}:${error}`} className="cap-shake bg-[#c3c6bb] border border-[#222222] p-2 text-[#000000] text-xs flex items-center gap-2 font-bold">
-          <AlertTriangle size={16} strokeWidth={1.5} className="text-[#222222] shrink-0" />
-          <p>{error}</p>
+      {/* ── بانر صرف الشهر ده: شريط عرضي فوق الصفحة كلها (رفض بيع) ── */}
+      {cardWithdrawnThisMonth && (
+        <div
+          className="px-3 py-2 border-2 text-[12px] font-black leading-6 shrink-0 flex items-center gap-2"
+          style={{ borderColor: "#c0392b", background: "#fdecea", color: "#c0392b" }}
+        >
+          <span className="text-lg shrink-0">⛔</span>
+          <p>
+            تم الصرف هذا الشهر ({cardWithdrawnThisMonth.month}) للزبون <b>{cardWithdrawnThisMonth.name}</b> — الصرف موقوف حتى
+            نهاية الشهر · <b>البيع مرفوض له الشهر ده</b> (اختار «+ عميل جديد» أو امسح الاسم والرقم السري).
+          </p>
         </div>
       )}
+
+      {/* الشريط الأحمر العلوي اتشال — الأخطاء بتظهر في مربع أحمر تحذيري في منتصف الصفحة (تحت) */}
 
       {success && (
         <div className="bg-[#c3c6bb] border border-[#222222] p-2 text-[#000000] text-xs flex items-center gap-2 font-bold">
@@ -1542,8 +2258,9 @@ if (true) {
         </div>
       )}
 
-      {/* Invoice Tabs (فواتير معلقة) */}
-      <div className="bg-[#222222] border border-[#000000] p-1.5 flex items-center gap-2 overflow-x-auto shrink-0">
+      {/* Invoice Tabs (فواتير معلقة) — بتظهر بس لو فيه فواتير معلقة؛ لما تكون فاضية كل حاجة بتبقى في سطر الشريط فوق (منغير سطر فاضي) */}
+      {heldInvoices.length > 0 && (
+      <div className="bg-[#222222] border border-[#000000] p-1 flex items-center gap-2 overflow-x-auto shrink-0">
         {heldInvoices.map((inv, idx) => {
           const cartTotal = (inv.cart || []).reduce((sum: number, item: any) => sum + (Number(item.total) || (Number(item.price) || 0) * (Number(item.quantity) || 0)), 0);
           const isActive = activeTabIndex === idx;
@@ -1597,6 +2314,7 @@ if (true) {
           الفاتورة الحالية: {invoiceNumber}
         </div>
       </div>
+      )}
 
       {/* تأكيد مسح الكل — داخل الصفحة (بدون نافذة نظام) */}
       {showClearAllConfirm && (
@@ -1665,14 +2383,11 @@ if (true) {
               <div className="w-40">
                 <label className="block text-xs font-extrabold text-[#000000]">طريقة الدفع</label>
                 <select
-                  value={paymentMethod}
+                  value={paymentMethod === "credit" ? "credit" : "cash"}
                   onChange={(e: any) => setPaymentMethod(e.target.value)}
                   className="w-full h-9 bg-[#b8bcb2] border border-[#888888] px-2 text-right text-xs font-bold text-[#000000] cursor-pointer focus:outline-none focus:border-[#222222]"
                 >
                   <option value="cash">نقداً (كاش)</option>
-                  <option value="instapay">انستاباي</option>
-                  <option value="visa">بطاقة بنكية</option>
-                  <option value="vodafone">محفظة إلكترونية</option>
                   <option value="credit">بيع آجل (على الحساب)</option>
                 </select>
               </div>
@@ -1687,6 +2402,8 @@ if (true) {
                   <option value="main_safe">الخزنة الرئيسية</option>
                 </select>
               </div>
+
+              {/* زر «مصروفات» اتنقل لشريط العلوي جنب «سدد» و«سجل الفواتير» */}
             </div>
 
             {/* Instant Search Results Dropdown overlay */}
@@ -1855,20 +2572,22 @@ if (true) {
                           <td className="py-3 px-4 text-center whitespace-nowrap">
                             <div className="flex items-center justify-center gap-1">
                               <button
-                                onClick={() => updateCartQty(actualIndex, String(Math.max(0.1, item.quantity - 1)))}
+                                onClick={() => updateCartQty(actualIndex, String(Math.max(1, Math.round(item.quantity || 0) - 1)))}
                                 className="w-7 h-7 bg-[#b8bcb2] border border-[#888888] font-black cursor-pointer hover:bg-[#222222] hover:text-[#c3c6bb] transition-colors"
                               >-</button>
                               <input
                                 type="number"
-                                step="any"
+                                step="1"
+                                min="1"
+                                inputMode="numeric"
                                 value={item.quantity || ""}
                                 onChange={(e) => updateCartQty(actualIndex, e.target.value)}
+                                onKeyDown={(e) => { if (e.key === "." || e.key === "," || e.key === "-") e.preventDefault(); }}
                                 onWheel={(e) => e.currentTarget.blur()}
                                 className="w-14 h-7 bg-[#b8bcb2] border border-[#888888] text-center text-xs font-bold text-[#000000] focus:outline-none"
-                                min="0.001"
                               />
                               <button
-                                onClick={() => updateCartQty(actualIndex, String(item.quantity + 1))}
+                                onClick={() => updateCartQty(actualIndex, String(Math.max(1, Math.round(item.quantity || 0)) + 1))}
                                 className="w-7 h-7 bg-[#b8bcb2] border border-[#888888] font-black cursor-pointer hover:bg-[#222222] hover:text-[#c3c6bb] transition-colors"
                               >+</button>
                             </div>
@@ -1907,6 +2626,50 @@ if (true) {
                 )}
               </div>
             )}
+
+            {/* شريط دفتر البطاقات + مربع «المبلغ مش مكتمل» — جنب بعض تحت منتجات السلة · مسافات متّسقة */}
+            {(isIncomplete || (!isWholesale && cardState)) && (
+            <div className="flex items-start gap-2 pt-1">
+              {isIncomplete && (
+                <div className="w-full max-w-[340px] shrink-0 p-[1px] rounded-xl" style={{ background: 'var(--danger)' }}>
+                  <div
+                    className="p-3 flex justify-between items-center font-black text-sm rounded-t-xl text-white"
+                    style={{ background: 'var(--danger)' }}
+                  >
+                    <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-white"></span>المبلغ مش مكتمل:</span>
+                    <span className="text-xl font-mono">{incompleteGap.toFixed(2)} <span className="text-xs opacity-90">ج.م</span></span>
+                  </div>
+                  <div className="px-3 py-1.5 text-[10px] font-black leading-4 text-white rounded-b-xl" style={{ background: 'var(--danger)' }}>
+                    ناقص بضاعة <b>{Math.abs(incompleteGap).toFixed(2)} ج.م</b> — الكارت والنقاط {creditTotal.toFixed(2)} ج.م أكبر من البضاعة {goodsValue.toFixed(2)} ج.م · زوّد البضاعة لحد ما يكتمل المبلغ.
+                  </div>
+                </div>
+              )}
+              {!isWholesale && cardState && (
+                <div
+                  className="flex-1 min-w-0 p-2.5 border-2 rounded-xl flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-black"
+                  style={{ borderColor: "var(--accent)", background: "var(--accent-subtle)", color: "var(--text-primary)" }}
+                >
+                  <span style={{ color: "var(--accent)" }}>💳 بطاقة {secretNumber.trim()}</span>
+                  <span className="font-mono">المسجّل: {cardState.topped.toFixed(2)}</span>
+                  <span className="font-mono">المتبقي: {cardState.remaining.toFixed(2)}</span>
+                  {cardState.last && (
+                    <span className="font-mono opacity-90">
+                      آخر صرف: {cardState.last.date || "—"} · {cardState.last.invoice_number} ({(cardState.last.items || []).map((i: any) => i.name).join(" + ") || "—"})
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={openCardDetails}
+                    className="ms-auto shrink-0 px-2.5 py-1 rounded-lg border font-black text-[11px] cursor-pointer transition-colors"
+                    style={{ borderColor: "var(--accent)", background: "#ffffff", color: "var(--accent)" }}
+                    title="كل العمليات على الكارت من يوم ما اتحفظ في البرنامج"
+                  >
+                    📋 التفاصيل
+                  </button>
+                </div>
+              )}
+            </div>
+            )}
           </div>
         </div>
 
@@ -1937,22 +2700,23 @@ if (true) {
               </div>
             </div>
 
-            {/* Tamween Card (بطاقة التموين) - 10 cards multi-select */}
+            {/* Tamween Card (بطاقة التموين) - 10 cards multi-select — مش ظاهر في الجملة */}
+            {!isWholesale && (
             <div className="lg:col-span-2 xl:col-span-1">
               <label className="block text-[#000000] mb-1">بطاقة التموينية (اختر بطاقة أو أكثر - اضغط لإضافة)</label>
               <div className="bg-[#b8bcb2] p-2 border border-[#888888]">
                 <div className="grid grid-cols-5 xl:grid-cols-3 gap-1">
                   {[
-                    { count: 1, value: 48.5 },
-                    { count: 2, value: 98.5 },
-                    { count: 3, value: 148.5 },
-                    { count: 4, value: 198.5 },
-                    { count: 5, value: 223.5 },
-                    { count: 6, value: 248.5 },
-                    { count: 7, value: 273.5 },
-                    { count: 8, value: 299.5 },
-                    { count: 9, value: 323.5 },
-                    { count: 10, value: 348.5 }
+                    { count: 1, value: 48 },
+                    { count: 2, value: 98 },
+                    { count: 3, value: 148 },
+                    { count: 4, value: 198 },
+                    { count: 5, value: 223 },
+                    { count: 6, value: 248 },
+                    { count: 7, value: 273 },
+                    { count: 8, value: 298 },
+                    { count: 9, value: 323 },
+                    { count: 10, value: 348 }
                   ].map(t => {
                     const occurrences = tamweenCards.filter(c => c === t.count);
                     const isSelected = occurrences.length > 0;
@@ -2006,8 +2770,8 @@ if (true) {
                       <input
                         autoFocus
                         type="number"
-                        step="0.01"
-                        min="0"
+                        step="1"
+                        min="1"
                         value={manualCardInput}
                         onChange={(e) => setManualCardInput(e.target.value)}
                         onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addManualCard(); } if (e.key === "Escape") { setManualCardOpen(false); setManualCardInput(""); } }}
@@ -2069,21 +2833,22 @@ if (true) {
                 </div>
               </div>
             </div>
+            )}
 
-            {/* تنبيه حي «ملئ الحقول» — يظهر لحظة اختيار الكارت من غير حفظ */}
-            {(tamweenCards.length > 0 || Number(tamweenDiscount) > 0) && (() => {
-              const missingFields: string[] = [];
-              if (!customerName.trim()) missingFields.push("اسم العميل");
-              if (!secretNumber.trim()) missingFields.push("الرقم السري");
-              if (!(Number(bonus) > 0)) missingFields.push("الحافز");
-              if (missingFields.length === 0) return null;
-              return (
-                <div className="cap-shake bg-[#fdecea] border-2 border-[#c0392b] p-2 flex items-start gap-1.5 text-[#9b1c1c] text-[11px] font-black">
-                  <AlertTriangle size={14} strokeWidth={2} className="shrink-0 mt-0.5" />
-                  <span>ملئ الحقول: ناقص {missingFields.join(" + ")} قبل الحفظ — (نقاط الخبز مش شرط)</span>
-                </div>
-              );
-            })()}
+            {/* تنبيه حدود السكر والزيت + اكتمال قيمة الكارت */}
+            {limitsActive && !cardLimitError && (
+              <div
+                className="flex items-center gap-2 p-2 border text-[11px] font-black rounded-lg"
+                style={{ borderColor: "var(--warning)", background: "rgba(243,156,18,0.12)", color: "var(--text-primary)" }}
+              >
+                <AlertTriangle size={13} strokeWidth={2} className="shrink-0" style={{ color: "var(--warning)" }} />
+                <span>
+                  حدود الكارت المختار — سكر: {sugarQty}/{maxSugar} · زيت: {oilQty}/{maxOil}
+                  {atBothCaps ? " · وصلوا لأقصى حد (تكمل قيمة الكارت ببضاعة بند تمويني)" : ""}
+                </span>
+              </div>
+            )}
+            {/* تنبيهات «ملئ الحقول» و«تجاوز الحدود» اتشالت من العرض الحي — بتظهر بس في مربع المركز بعد «حفظ وتأكيد» */}
 
             {/* Customer Name (اسم العميل) */}
             <div className="relative">
@@ -2118,6 +2883,9 @@ if (true) {
                         e.preventDefault();
                         setCustomerName(c.name);
                         setSecretNumber(c.secret_number);
+                        // الاستدعاء لازم يجيب الهوية كاملة: رقم الزبون (بدل الاسم لوحده) — الخانات تفضل فاضية (طلب 57)
+                        setTamweenCustomerId(typeof c.id === "number" ? c.id : null);
+                        pendingRestoreRef.current = false;
                         setShowNameDropdown(false);
                       }}
                       className="w-full text-right px-3 py-2 text-xs font-bold text-[#000000] hover:bg-[#b8bcb2] border-b border-[#888888]/30 cursor-pointer flex justify-between items-center"
@@ -2130,7 +2898,8 @@ if (true) {
               )}
             </div>
 
-            {/* Secret Number (الرقم السري) */}
+            {/* Secret Number (الرقم السري) — مش ظاهر في الجملة */}
+            {!isWholesale && (
             <div className="relative">
               <div className="flex items-center justify-between mb-1">
                 <label className="block text-[#000000]">الرقم السري</label>
@@ -2156,6 +2925,9 @@ if (true) {
                         e.preventDefault();
                         setCustomerName(c.name);
                         setSecretNumber(c.secret_number);
+                        // الاستدعاء لازم يجيب الهوية كاملة: رقم الزبون (بدل الاسم لوحده) — الخانات تفضل فاضية (طلب 57)
+                        setTamweenCustomerId(typeof c.id === "number" ? c.id : null);
+                        pendingRestoreRef.current = false;
                         setShowSecretDropdown(false);
                       }}
                       className="w-full text-right px-3 py-2 text-xs font-bold text-[#000000] hover:bg-[#b8bcb2] border-b border-[#888888]/30 cursor-pointer flex justify-between items-center"
@@ -2167,8 +2939,148 @@ if (true) {
                 </div>
               )}
             </div>
+            )}
 
-            {/* Bread Points (نقاط الخبز) - manual */}
+            {/* شريط البطاقة والبانر الأحمر اتنقلوا: الشريط لملخص الفاتورة · البانر أعلى الصفحة */}
+
+            {/* سطر «الخصم هيتقصّص» اتشال من العرض الحي (معلومة مش خطأ — الإجمالي بيبيّن المبالغ بعد التقفيل) */}
+
+            {/* الرقم السري مش تابع للاسم — اتشال من العرض الحي، بيتحجز في مربع المركز وقت «حفظ وتأكيد» */}
+
+            {/* تنبيه الصرف القديم (كلي/جزئي/مؤجّل) — إضافته للفاتورة الجديدة أو تأجيله */}
+            {oldSpend && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+                <div className="bg-white border-2 border-[#222222] rounded-xl p-4 w-[92%] max-w-md shadow-2xl">
+                  <p className="text-sm font-black text-[#000000] mb-1">
+                    ⚠ تنبيه — صرف سابق للزبون {oldSpend.name}
+                  </p>
+                  <div className="text-xs font-bold text-[#555555] leading-7">
+                    <p className="font-black text-[#000000] text-[13px]">
+                      {oldSpend.pending
+                        ? "فاتورة مؤجّلة (صرف كلي/جزئي)"
+                        : oldSpend.status === "later"
+                        ? "صرف مؤجّل من قبل"
+                        : oldSpend.status === "withdrawn"
+                        ? "تم صرف بطاقته من قبل"
+                        : "صرف سابق"}
+                    </p>
+                    <p>
+                      تم صرف <span className="font-mono text-[#000000]">{oldSpend.spent.toFixed(2)}</span> ج.م من أصل{" "}
+                      <span className="font-mono text-[#000000]">{oldSpend.topped.toFixed(2)}</span> ج.م.
+                    </p>
+                    <p>
+                      المتبقي للعميل: <span className="font-mono text-[#000000]">{oldSpend.remaining.toFixed(2)}</span> ج.م.
+                    </p>
+                    <p className="pt-1">أضيفه للفاتورة الجديدة ولا تؤجله؟</p>
+                  </div>
+                  <div className="flex gap-2 mt-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        // فيه فاتورة مؤجّلة → نرجّعها زي ما هي · غير كده → نضيف قيمة الصرف القديم كبطاقة
+                        let pj: any = null;
+                        if (oldSpend.pending && oldSpend.pendingJson) {
+                          try { pj = JSON.parse(oldSpend.pendingJson); } catch { pj = null; }
+                        }
+                        if (pj && (Array.isArray(pj.cart) || pj.customerName)) {
+                          pendingRestoreRef.current = true;
+                          if (Array.isArray(pj.cart)) setCart(pj.cart);
+                          // كل بيانات العميل من اللقطة: الاسم + الرقم السري (المطابقة اتأكد منها السيرفر وقت الحفظ)
+                          if (pj.customerName) setCustomerName(pj.customerName);
+                          if (pj.secretNumber) setSecretNumber(pj.secretNumber);
+                          if (typeof pj.discount === "number") setDiscount(pj.discount);
+                          if (Array.isArray(pj.tamweenCards)) setTamweenCards(pj.tamweenCards);
+                          setManualCardOpen(!!pj.manualCardOpen);
+                          setManualCardInput(typeof pj.manualCardInput === "string" ? pj.manualCardInput : "");
+                          if (typeof pj.breadPoints === "number") setBreadPoints(pj.breadPoints);
+                          if (typeof pj.bonus === "number") setBonus(pj.bonus);
+                          if (typeof pj.paid === "number") setPaid(pj.paid);
+                          if (pj.saleType === "retail" || pj.saleType === "wholesale") setSaleType(pj.saleType);
+                          if (pj.paymentMethod) setPaymentMethod(pj.paymentMethod);
+                          if (pj.paymentSource) setPaymentSource(pj.paymentSource);
+                        } else {
+                          const amount = Math.max(Number(oldSpend.remaining) || 0, Number(oldSpend.spent) || 0);
+                          const tv = [0, 48, 98, 148, 198, 223, 248, 273, 298, 323, 348];
+                          const cards: number[] = [];
+                          let rem = amount;
+                          for (let i = tv.length - 1; i >= 1; i--) {
+                            while (rem >= tv[i] && cards.length < 10) { cards.push(i); rem -= tv[i]; }
+                          }
+                          const merged = [...tamweenCards];
+                          for (const c of cards) if (!merged.includes(c)) merged.push(c);
+                          setTamweenCards(merged);
+                        }
+                        setOldSpend(null);
+                      }}
+                      className="flex-1 py-2 bg-[#27ae60] hover:bg-[#219a52] text-white font-black text-xs rounded"
+                    >
+                      ➕ أضيفه للفاتورة
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setOldSpend(null)}
+                      className="flex-1 py-2 bg-[#f39c12] hover:bg-[#e67e22] text-white font-black text-xs rounded"
+                    >
+                      ⏳ أجّله
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* الحافز إجباري لو الإجمالي صفر — يفتح لوحده قبل الحفظ النهائي */}
+            {bonusPromptOpen && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+                <div className="bg-white border-2 border-[#222222] rounded-xl p-4 w-[92%] max-w-sm shadow-2xl relative">
+                  <button
+                    type="button"
+                    onClick={() => setBonusPromptOpen(false)}
+                    title="إلغاء"
+                    className="absolute top-3 left-3 w-7 h-7 flex items-center justify-center bg-[#b8bcb2] hover:bg-[#e74c3c] hover:text-white border border-[#888888] rounded-lg cursor-pointer font-black text-sm"
+                  >
+                    ✕
+                  </button>
+                  <p className="text-sm font-black text-[#000000] mb-1 pr-6">من فضلك أضف الحافز</p>
+                  <p className="text-[11px] font-bold text-[#555555] leading-6 mb-2">
+                    الفاتورة مغطّاة كاملة بالكارت ونقاط الخبز — الإجمالي صفر. الحافز هيدخل الدرج نقدًا صافي، وبعدها نحفظ ونطبع.
+                  </p>
+                  <input
+                    autoFocus
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={bonusPromptValue}
+                    onChange={(e) => setBonusPromptValue(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") { e.preventDefault(); confirmBonusPrompt(); }
+                      if (e.key === "Escape") { setBonusPromptOpen(false); }
+                    }}
+                    placeholder="0.00"
+                    className="w-full h-10 border-2 rounded-lg px-3 text-center text-sm font-black font-mono outline-none"
+                    style={{ borderColor: "var(--accent)", color: "var(--text-primary)", background: "var(--bg-input)" }}
+                  />
+                  <div className="flex gap-2 mt-3">
+                    <button
+                      type="button"
+                      onClick={confirmBonusPrompt}
+                      className="flex-1 py-2 bg-[#27ae60] hover:bg-[#219a52] text-white font-black text-xs rounded"
+                    >
+                      ✔ موافق — حفظ وطباعة
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBonusPromptOpen(false)}
+                      className="flex-1 py-2 bg-[#b8bcb2] hover:bg-[#222222] text-white font-black text-xs rounded"
+                    >
+                      إلغاء
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Bread Points (نقاط الخبز) - manual — مش ظاهر في الجملة */}
+            {!isWholesale && (
             <div>
               <label className="block text-[#000000] mb-1">نقاط الخبز (يدوي - بالسالب)</label>
               <div className="flex items-center gap-2 bg-[#b8bcb2] p-1 border border-[#888888]">
@@ -2187,9 +3099,11 @@ if (true) {
                 <span className="text-[10px] text-[#000000] font-bold">ج.م (-)</span>
               </div>
             </div>
+            )}
 
 
-            {/* Bonus (الحافز) - manual */}
+            {/* Bonus (الحافز) - manual — يظهر مع الصرف الكلي بس */}
+            {isFullCardSpend && (
             <div>
               <label className="block text-[#000000] mb-1">الحافز (يدوي - مثال: 5 ج.م)</label>
               <div className="flex items-center gap-2 bg-[#b8bcb2] p-1 border border-[#888888]">
@@ -2208,6 +3122,7 @@ if (true) {
                 <span className="text-[10px] text-[#000000] font-bold">ج.م (+)</span>
               </div>
             </div>
+            )}
 
           </div>
         </div>
@@ -2255,18 +3170,38 @@ if (true) {
                     <span>إجمالي بطاقات التموين:</span>
                     <span>- {tamweenDiscount.toFixed(2)} ج.م</span>
                   </div>
+                  {cardCapped && (
+                    <div className="text-[10px] font-black text-[#92400e] bg-[#fef3c7] border border-[#f59e0b] rounded px-2 py-1">
+                      ⚠ المأخوذ من الكارت {tamweenDiscount.toFixed(2)} ج.م من المتاح {cardFunds.toFixed(2)} ج.م (الباقي المسجّل + المكتوب) — والباقي {(cardFunds - tamweenDiscount).toFixed(2)} ج.م يفضل <b>رصيد على كارت الزبون</b>.
+                    </div>
+                  )}
                 </>
               )}
-              {breadPoints > 0 && (
+              {breadPointsEff > 0 && (
                 <div className="flex justify-between text-[#b91c1c]">
                   <span>نقاط الخبز:</span>
-                  <span className="font-bold">- {breadPoints.toFixed(2)} ج.م</span>
+                  <span className="font-bold">- {breadPointsEff.toFixed(2)} ج.م</span>
                 </div>
               )}
-              {(tamweenDiscount + breadPoints) > 0 && (
+              {breadPointsCapped && (
+                <div className="text-[10px] font-black text-[#92400e] bg-[#fef3c7] border border-[#f59e0b] rounded px-2 py-1">
+                  ⚠ صرف جزئي: النقاط المتاحة {pointsFunds.toFixed(2)} ج.م (رصيد + مكتوب) اتاخد منها {breadPointsEff.toFixed(2)} ج.م عشان (الكارت + النقاط) مع بعض ما يتجاوزوش البضاعة {goodsValue.toFixed(2)} ج.م — الفرق هيفضل <b>رصيد نقاط للزبون</b>.
+                </div>
+              )}
+              {breadUnregistered && (
+                <div className="text-[10px] font-black text-[#92400e] bg-[#fef3c7] border border-[#f59e0b] rounded px-2 py-1">
+                  ⚠ الزبون لسه مش مسجّل في دفتر الكروت — هيتسجّل <b>تلقائيًا مع أول صرف</b> والقيمة المكتوبة (كارت + نقاط) هتتشحن له، والمأخوذ {breadPointsEff.toFixed(2)} ج.م نقاط هيتخصم منها والباقي يفضل رصيده.
+                </div>
+              )}
+              {breadOverBalance && (
+                <div className="text-[10px] font-black text-[#92400e] bg-[#fef3c7] border border-[#f59e0b] rounded px-2 py-1">
+                  ⚠ النقاط المطلوبة {breadPointsEff.toFixed(2)} ج.م أكبر من المتاح {pointsFunds.toFixed(2)} ج.م (رصيد + مكتوب) — <b>هيترفض الحفظ</b>.
+                </div>
+              )}
+              {(tamweenDiscount + breadPointsEff) > 0 && (
                 <div className="flex justify-between text-[#b91c1c] border-t border-[#888888] pt-1 font-black">
                   <span>إجمالي الدعم ونقاط الخبز:</span>
-                  <span>- {(tamweenDiscount + breadPoints).toFixed(2)} ج.م</span>
+                  <span>- {(tamweenDiscount + breadPointsEff).toFixed(2)} ج.م</span>
                 </div>
               )}
               {bonus > 0 && (
@@ -2277,13 +3212,23 @@ if (true) {
               )}
             </div>
 
-            {/* Final Total Display - theme-aware */}
-            <div className="p-[1px] rounded-xl" style={{background: 'var(--success)'}}>
-              <div className="p-3 flex justify-between items-center font-black text-sm rounded-xl text-white" style={{background: 'var(--success)'}}>
+            {/* Final Total Display — أخضر فقط: الإجمالي النهائي · أما المربع الأحمر «المبلغ مش مكتمل» فاتنقل تحت منتجات السلة عشان يتحرك معاها */}
+            {!isIncomplete && (
+            <div className="p-[1px] rounded-xl" style={{ background: 'var(--success)' }}>
+              <div
+                className="p-3 flex justify-between items-center font-black text-sm rounded-t-xl text-white"
+                style={{ background: 'var(--success)', borderRadius: creditLine ? '0.75rem 0.75rem 0 0' : '0.75rem' }}
+              >
                 <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-white"></span>الإجمالي النهائي:</span>
                 <span className="text-xl font-mono">{(total || 0).toFixed(2)} <span className="text-xs opacity-90">ج.م</span></span>
               </div>
+              {creditLine && (
+                <div className="px-3 py-1.5 text-[10px] font-black leading-4 text-white rounded-b-xl" style={{ background: 'var(--success)' }}>
+                  الزيادة عن الكارت والنقاط {remainder.toFixed(2)} + الحافز {bonus.toFixed(2)} = <b>{total.toFixed(2)} ج.م</b>
+                </div>
+              )}
             </div>
+            )}
 
             {/* بيع آجل — المدفوع الآن + المتبقي على الحساب */}
             {paymentMethod === "credit" && (
@@ -2322,16 +3267,51 @@ if (true) {
               </div>
             )}
 
-            {/* Withdrawal Choice - replaces المدفوع والباقي */}
+            {/* Withdrawal Choice - replaces المدفوع والباقي — مش ظاهر في الجملة */}
+            {!isWholesale && (
             <div>
-              <label className="block text-[#000000] mb-1 font-black text-[11px]">اختيار الصرف</label>
-              <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-[var(--bg-input)] border border-[var(--border)]">
+              <label className="block text-[#000000] mb-1 font-black text-[11px]">
+                {mustFullWithdraw ? "اختيار الصرف — صرف كلي إجباري" : "اختيار الصرف"}
+              </label>
+              {mustFullWithdraw ? (
+                <div className="space-y-1.5">
+                  <div className="grid grid-cols-2 gap-1 p-1 rounded-xl border-2 border-[#27ae60]" style={{ background: "var(--bg-input)" }}>
+                    <button
+                      type="button"
+                      onClick={() => setWithdrawalChoice("now")}
+                      className="h-9 text-xs font-black rounded-lg text-white shadow"
+                      style={{ background: '#27ae60' }}
+                    >💰 صرف الآن (كلي)</button>
+                    <button
+                      type="button"
+                      onClick={() => setWithdrawalChoice("part")}
+                      className="h-9 text-xs font-black rounded-lg text-white shadow"
+                      style={{ background: '#2563eb' }}
+                    >✂️ صرف جزئي</button>
+                  </div>
+                  <p
+                    className="text-[10px] font-black leading-5 p-2 rounded-lg border-2 border-[#27ae60]"
+                    style={{ background: "var(--bg-card)", color: "var(--text-primary)" }}
+                  >
+                    ⚠ الكارت هيتصفّي بالكامل ({breadPointsEff > 0 ? "بضاعة الكارت + نقاط الخبز" : "بضاعة الكارت"}) → <b>صرف كلي إجباري</b> · اتشال «صرف في وقت لاحق» · والباقي يفضل على الزبون لو اختارت <b>«✂️ صرف جزئي»</b>.
+                  </p>
+                </div>
+              ) : (
+              <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-[var(--bg-input)] border border-[var(--border)]">
                 <button
                   type="button"
                   onClick={() => setWithdrawalChoice("now")}
                   className={`h-9 text-xs font-black rounded-lg cursor-pointer transition-all ${withdrawalChoice === "now" ? "text-white shadow" : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"}`}
                   style={withdrawalChoice === "now" ? {background: '#27ae60'} : {}}
                 >💰 صرف الآن</button>
+                {/* صرف جزء: ظاهر دائمًا (التحقق جوّه الحفظ يوجّه لو مفيش كارت/بضاعة) */}
+                <button
+                  type="button"
+                  onClick={() => setWithdrawalChoice("part")}
+                  className={`h-9 text-xs font-black rounded-lg cursor-pointer transition-all ${withdrawalChoice === "part" ? "text-white shadow" : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"}`}
+                  style={withdrawalChoice === "part" ? {background: '#2563eb'} : {}}
+                  title={cardState && cardState.remaining > 0 ? `صرف جزء من الكارت — المتبقي ${cardState.remaining.toFixed(2)} ج.م` : "صرف جزء من الكارت — البضاعة المأخوذة دلوقتي بس والباقي يفضل على الزبون"}
+                >✂️ صرف جزء</button>
                 <button
                   type="button"
                   onClick={() => setWithdrawalChoice("later")}
@@ -2339,23 +3319,64 @@ if (true) {
                   style={withdrawalChoice === "later" ? {background: '#f39c12'} : {}}
                 >⏳ صرف في وقت لاحق</button>
               </div>
+              )}
             </div>
+            )}
+
+            {/* الصرف السابق للقراءة فقط — اللي الزبون خده قبل كده (جزئي/كلي) وهو لسه فاضل له رصيد */}
+            {cardState && cardState.remaining > 0 && cardState.last && (
+              <div
+                className="p-2.5 rounded-xl border-2 border-dashed space-y-1.5"
+                style={{ borderColor: "var(--border-strong)", background: "var(--bg-card)" }}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-black text-[var(--text-primary)]">📖 الصرف السابق (للقراءة فقط)</span>
+                  <span className="font-mono text-[10px] font-bold text-[var(--text-muted)]">
+                    {cardState.last.invoice_number} · {cardState.last.date || ""}
+                  </span>
+                </div>
+                <ul className="space-y-1">
+                  {(cardState.last.items || []).map((it: any, idx: number) => (
+                    <li key={idx} className="flex justify-between text-[11px] font-bold text-[var(--text-secondary)]">
+                      <span>{it.name} × {it.quantity}</span>
+                      <span className="font-mono">{Number(it.total || 0).toFixed(2)} ج.م</span>
+                    </li>
+                  ))}
+                  {(cardState.last.items || []).length === 0 && (
+                    <li className="text-[11px] font-bold text-[var(--text-muted)]">مفيش أصناف مسجّلة في آخر صرف.</li>
+                  )}
+                </ul>
+                <div className="pt-1 border-t text-[11px] font-black text-[var(--text-primary)] flex justify-between">
+                  <span>💰 المتبقي من الكارت:</span>
+                  <span className="font-mono">{cardState.remaining.toFixed(2)} ج.م</span>
+                </div>
+                <p className="text-[10px] font-bold text-[var(--text-muted)]">للقراءة فقط — الزبون ليه حق يكمّل باقي الكارت بفاتورة جديدة.</p>
+              </div>
+            )}
 
             {withdrawalChoice === "later" ? (
               <button
                 type="button"
                 onClick={async () => {
+                  if (mustFullWithdraw) {
+                    setError("الكارت هيخلص في الفاتورة دي — ممنوع «صرف في وقت لاحق»، لازم صرف كلي الآن.");
+                    return;
+                  }
                   if (!customerName.trim() || !secretNumber.trim()) {
                     setError("ادخل اسم العميل والرقم السري أولاً.");
                     return;
                   }
-                  if (tamweenCards.length === 0) {
-                    setError("للحفظ كـ صرف لاحق لازم تختار كارت قيمة التموين أولاً.");
+                  if (tamweenCards.length === 0 && !(Number(breadPoints) > 0)) {
+                    setError("للحفظ كـ صرف لاحق لازم تختار كارت قيمة التموين أو تكتب نقاط الخبز أولاً.");
                     return;
                   }
                   try {
-                    const existingRes = await authFetch(`/api/tamween-customers/by-secret/${encodeURIComponent(secretNumber)}`);
+                    const existingRes = await authFetch(`/api/tamween-customers/by-secret/${encodeURIComponent(secretNumber)}?name=${encodeURIComponent(customerName.trim())}`);
                     const existing = await existingRes.json();
+                    if (existing?.mismatch) {
+                      setError(existing.message || "الاسم والرقم السري مش مطابقين لنفس الزبون.");
+                      return;
+                    }
                     let customerId = existing?.id;
                     // Full snapshot of the sale page to restore it exactly on "صرف الآن"
                     const pending_sale = {
@@ -2367,8 +3388,15 @@ if (true) {
                       paymentSource,
                       discount,
                       tamweenCards: [...tamweenCards],
+                      // مبلغ الكارت بالجنيه (لو الكارت يدوي مضاف في tamweenCards كقيمة خام)
+                      cardValue: rawTamweenDiscount,
+                      manualCardOpen,
+                      manualCardInput,
+                      // المتبقي المتوقع بعد الصرف (للعرض في المؤجّلة): المتاح (باقي + مكتوب) − المأخوذ
+                      remaining: Math.max(0, (Number(cardState?.remaining || 0) + Math.max(0, rawTamweenDiscount)) - tamweenDiscount),
                       breadPoints,
-                      bonus,
+                      // فاتورة لم تُصرف لسه → مفيش حافز، الحافز بيتسجّل عند الإنهاء بس
+                      bonus: 0,
                       paid,
                     };
                     if (!existing) {
@@ -2380,14 +3408,15 @@ if (true) {
                           secret_number: secretNumber.trim(),
                           phone: "",
                           card_value: tamweenDiscount || 0,
-                          bread_points: breadPoints || 0,
+                          // النقاط المكتوبة بتتشحن مع التعليق (زي الكارت — طلب 57 · كانت بتضيع)
+                          bread_points: Math.max(0, breadPoints) || 0,
                           pending_sale,
                         }),
                       });
                       const newData = await newRes.json();
                       customerId = newData.customer?.id;
                     } else {
-                      // Update existing customer's card_value — pending snapshot always carries the record identity
+                      // حفظ بطاقة زبون مسجّل = شحن (زيادة) — القيمة المكتوبة كاملة تتجمع فوق الباقي (طلب 57)
                       await authFetch(`/api/tamween-customers/${customerId}`, {
                         method: "PUT",
                         headers: { "Content-Type": "application/json" },
@@ -2395,8 +3424,9 @@ if (true) {
                           name: existing.name,
                           secret_number: existing.secret_number,
                           phone: existing.phone || "",
-                          card_value: tamweenDiscount || 0,
-                          bread_points: breadPoints || 0,
+                          card_value: Number(existing.card_value || 0) + Math.max(0, rawTamweenDiscount),
+                          // النقاط المكتوبة بتتشحن مع التعليق (زي الكارت — طلب 57 · كانت بتضيع)
+                          bread_points: Number(existing.bread_points || 0) + Math.max(0, breadPoints),
                           pending_sale: { ...pending_sale, customerName: existing.name, secretNumber: existing.secret_number },
                         }),
                       });
@@ -2405,7 +3435,7 @@ if (true) {
                       await authFetch(`/api/tamween-customers/${customerId}/activate`, { method: "POST" });
                       // رسالة داخل الصفحة بدل alert — الـ alert بيسرق فوكس النافذة ويجمد الحقول
                       setError("");
-                      setSuccess("تم حفظ البطاقة — صرف في وقت لاحق.");
+                      setSuccess("تم حفظ كل بيانات العميل (الاسم · الرقم السري · مبلغ الكارت · نقاط الخبز) — صرف في وقت لاحق. أول ما تضغط «صرف الآن» من قائمة الزبائن هتنتقل كاملة للكاشير.");
                       setCustomerName("");
                       setSecretNumber("");
                       setCart([]);
@@ -2442,12 +3472,12 @@ if (true) {
               <button
                 onClick={handleSubmitInvoice}
                 disabled={loading}
-                title={total <= 0 && cart.length > 0 ? "الإجمالي النهائي يجب أن يكون بالموجب — راجع الدعم والخصومات" : ""}
+                title={isIncomplete ? "المبلغ مش مكتمل — الكارت والنقاط أكبر من البضاعة" : total <= 0 && cart.length > 0 ? "الإجمالي النهائي يجب أن يكون بالموجب — راجع الدعم والخصومات" : ""}
                 className="w-full h-11 text-white font-black text-xs rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-40 shadow-lg"
-                style={{background: 'var(--success)', boxShadow: '0 4px 16px var(--accent-glow)'}}
+                style={{background: isIncomplete ? 'var(--danger)' : 'var(--success)', boxShadow: '0 4px 16px var(--accent-glow)'}}
               >
                 <Wallet size={16} strokeWidth={2} />
-                <span>{loading ? "جاري الحفظ..." : total <= 0 && cart.length > 0 ? "الإجمالي غير موجب — لا يمكن الحفظ" : "حفظ وتأكيد الفاتورة"}</span>
+                <span>{loading ? "جاري الحفظ..." : isIncomplete ? `⛔ ناقص ${Math.abs(incompleteGap).toFixed(2)} ج.م بضاعة` : total <= 0 && cart.length > 0 ? "الإجمالي غير موجب — لا يمكن الحفظ" : mustFullWithdraw ? "💰 حفظ وصرف كلي" : withdrawalChoice === "part" ? "✂️ حفظ وصرف جزء" : "حفظ وتأكيد الفاتورة"}</span>
               </button>
             )}
 
@@ -2455,6 +3485,529 @@ if (true) {
         </div>
 
       </div>
+
+      {/* نافذة تقفيل اليومية المصغّرة — نفس محتوى صفحة «تقفيل اليومية» بدل تحويل الشاشة */}
+      {drawerCloseOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4 no-print">
+          <div className="bg-[#c3c6bb] border-2 border-[#222222] rounded-xl p-4 w-[94%] max-w-3xl relative shadow-2xl max-h-[94vh] overflow-y-auto text-right">
+            <button
+              type="button"
+              onClick={() => setDrawerCloseOpen(false)}
+              className="absolute top-3 left-3 z-10 w-8 h-8 flex items-center justify-center bg-[#b8bcb2] hover:bg-[#222222] hover:text-[#c3c6bb] border border-[#888888] rounded-lg cursor-pointer"
+            >
+              <X size={16} />
+            </button>
+
+            <h3 className="font-extrabold text-sm text-[#000000] border-b border-[#888888] pb-2 pr-1 mb-3">
+              تقفيل اليومية
+            </h3>
+
+            <DrawerClose currentUser={currentUser} />
+          </div>
+        </div>
+      )}
+
+      {/* نافذة تسجيل المصروف السريع — تفتح من زر «مصروف» وتحفظ وتقفل على طول */}
+      {expenseOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4 no-print">
+          <div className="bg-[#c3c6bb] border-2 border-[#222222] rounded-xl p-4 w-[92%] max-w-lg relative space-y-3 text-right shadow-2xl max-h-[92vh] overflow-y-auto">
+            <button
+              type="button"
+              onClick={() => { setExpenseOpen(false); setExpenseError(""); }}
+              className="absolute top-3 left-3 w-8 h-8 flex items-center justify-center bg-[#b8bcb2] hover:bg-[#222222] hover:text-[#c3c6bb] border border-[#888888] rounded-lg cursor-pointer"
+            >
+              <X size={16} />
+            </button>
+
+            <h3 className="font-extrabold text-sm text-[#000000] border-b border-[#888888] pb-2 pr-1">
+              تسجيل مصروف جديد
+            </h3>
+
+            {expenseError && (
+              <p className="bg-[#b8bcb2] text-[#000000] border border-[#222222] p-2 text-xs font-bold">
+                {expenseError}
+              </p>
+            )}
+
+            <form
+              onSubmit={(e) => { e.preventDefault(); saveCashierExpense(); }}
+              className="space-y-3 text-xs font-bold"
+            >
+              <div>
+                <label className="block text-[#000000] mb-1">مصدر الدفع</label>
+                <select
+                  value={expenseForm.payment_source}
+                  onChange={(e) => setExpenseForm({ ...expenseForm, payment_source: e.target.value })}
+                  className="w-full h-9 bg-white border border-[#888888] px-2 text-right text-xs font-bold text-[#000000] cursor-pointer focus:outline-none focus:border-[#222222] rounded-lg"
+                >
+                  <option value="cash_register">درج الكاشير</option>
+                  <option value="main_safe">الخزنة الرئيسية</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[#000000] mb-1">عنوان المصروف (اسم مستلم النقديه)</label>
+                <input
+                  type="text"
+                  value={expenseForm.title}
+                  onChange={(e) => setExpenseForm({ ...expenseForm, title: e.target.value })}
+                  placeholder="اسم المستلم..."
+                  className="w-full h-9 bg-white border border-[#888888] px-3 text-right text-xs font-bold text-[#000000] focus:outline-none focus:border-[#222222] rounded-lg"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+                <div>
+                  <label className="block text-[#000000] mb-1">المبلغ (ج.م)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.5"
+                    value={expenseForm.amount || ""}
+                    onChange={(e) => setExpenseForm({ ...expenseForm, amount: parseFloat(e.target.value) || 0 })}
+                    className="w-full h-9 bg-white border border-[#888888] px-3 text-right text-xs font-bold font-mono text-[#000000] focus:outline-none focus:border-[#222222] rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[#000000] mb-1">التصنيف</label>
+                  <select
+                    value={expenseForm.category}
+                    onChange={(e) => setExpenseForm({ ...expenseForm, category: e.target.value })}
+                    className="w-full h-9 bg-white border border-[#888888] px-2 text-right text-xs font-bold text-[#000000] cursor-pointer focus:outline-none focus:border-[#222222] rounded-lg"
+                  >
+                    {expenseCats.map((c) => (
+                      <option key={c.value} value={c.value}>{c.label}</option>
+                    ))}
+                    {/* التصنيف الحالي محفوظ في الفواتير القديمة حتى لو اتشال من القائمة */}
+                    {!expenseCats.some((c) => c.value === expenseForm.category) && (
+                      <option value={expenseForm.category}>{expenseForm.category}</option>
+                    )}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[#000000] mb-1">تاريخ الإنفاق</label>
+                <input
+                  type="date"
+                  value={expenseForm.date}
+                  onChange={(e) => setExpenseForm({ ...expenseForm, date: e.target.value })}
+                  className="w-full h-9 bg-white border border-[#888888] px-3 text-right text-xs font-bold font-mono text-[#000000] focus:outline-none focus:border-[#222222] rounded-lg"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[#000000] mb-1">ملاحظات (سبب السحب)</label>
+                <textarea
+                  value={expenseForm.notes}
+                  onChange={(e) => setExpenseForm({ ...expenseForm, notes: e.target.value })}
+                  placeholder="سبب المصروف..."
+                  rows={2}
+                  className="w-full bg-white border border-[#888888] p-2 text-right text-xs font-bold text-[#000000] focus:outline-none focus:border-[#222222] rounded-lg"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={expenseSaving}
+                className="w-full h-11 bg-[#222222] hover:bg-[#000000] text-[#c3c6bb] font-black text-xs transition-colors cursor-pointer disabled:opacity-50 rounded-xl"
+              >
+                {expenseSaving ? "جاري الحفظ..." : "تسجيل المصروف"}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* نافذة «تفاصيل الكارت» — كل العمليات اللي حصلت على الكارت من يوم ما اتحفظ في البرنامج */}
+      {cardDetailOpen && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4 no-print">
+          <div className="bg-[#c3c6bb] border-2 border-[#222222] rounded-xl p-4 w-[94%] max-w-3xl relative space-y-3 text-right shadow-2xl max-h-[92vh] overflow-y-auto">
+            <button
+              type="button"
+              onClick={() => setCardDetailOpen(false)}
+              className="absolute top-3 left-3 w-8 h-8 flex items-center justify-center bg-[#b8bcb2] hover:bg-[#222222] hover:text-[#c3c6bb] border border-[#888888] rounded-lg cursor-pointer"
+            >
+              <X size={16} />
+            </button>
+
+            <h3 className="font-extrabold text-sm text-[#000000] border-b border-[#888888] pb-2 pr-1">
+              📋 تفاصيل الكارت {secretNumber.trim()} — {cardDetail?.customer?.name || customerName || "—"}
+            </h3>
+
+            {cardDetailError && (
+              <p className="bg-[#b8bcb2] text-[#000000] border border-[#222222] p-2 text-xs font-bold">
+                {cardDetailError}
+              </p>
+            )}
+
+            {cardDetailLoading ? (
+              <p className="p-4 text-xs font-bold text-[#555555] text-center">جاري تحميل سجل الكارت...</p>
+            ) : cardDetail ? (
+              <div className="space-y-3">
+                {/* ── الملخص ── */}
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { label: "المسجّل (شحنات)", value: Number(cardDetail.topped || 0), color: "#2c3e50" },
+                    { label: "المتّصرف", value: Number(cardDetail.spent || 0), color: "#c0392b" },
+                    { label: "المتبقي", value: Number(cardDetail.remaining || 0), color: Number(cardDetail.remaining) > 0.001 ? "#27ae60" : "#888888" },
+                  ].map((s) => (
+                    <div key={s.label} className="bg-white border border-[#888888] rounded-lg p-2 text-center">
+                      <p className="text-[10px] font-bold text-[#555555]">{s.label}</p>
+                      <p className="text-lg font-black font-mono" style={{ color: s.color }}>
+                        {s.value.toFixed(2)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="bg-white border border-[#888888] rounded-lg p-2.5 space-y-1 text-[11px] font-bold">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[#555555]">تاريخ أول حفظ في البرنامج</span>
+                    <span className="font-mono text-[#000000]">{cardDetail.customer?.created_at || "—"}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[#555555]">الحالة</span>
+                    <span className="font-mono text-[#000000]">
+                      {cardDetail.customer?.status === "withdrawn"
+                        ? `تم الصرف (${cardDetail.customer.status_month})`
+                        : cardDetail.customer?.status === "later"
+                        ? `صرف لاحق (${cardDetail.customer.status_month})`
+                        : "—"}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[#555555]">عدد الشحنات / إجماليها</span>
+                    <span className="font-mono text-[#000000]">
+                      {(cardDetail.charges || []).length} × · {Number(cardDetail.topped || 0).toFixed(2)} ج.م
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[#555555]">عدد مرات الصرف / إجماليها</span>
+                    <span className="font-mono text-[#000000]">
+                      {(cardDetail.withdrawals || []).length} × · {Number(cardDetail.spent || 0).toFixed(2)} ج.م
+                    </span>
+                  </div>
+                </div>
+
+                {/* ── سجل العمليات ── */}
+                <div className="bg-white border border-[#888888] rounded-lg overflow-hidden">
+                  <div className="grid grid-cols-[78px_62px_78px_1fr] gap-2 px-2.5 py-2 bg-[#222222] text-[10px] font-black text-[#c3c6bb]">
+                    <span>التاريخ</span>
+                    <span>النوع</span>
+                    <span className="text-left">المبلغ</span>
+                    <span>البيان</span>
+                  </div>
+                  <div className="max-h-[46vh] overflow-y-auto divide-y divide-[#dddddd]">
+                    {(cardDetail.timeline || []).length === 0 ? (
+                      <p className="p-4 text-xs font-bold text-[#555555] text-center">
+                        مفيش أي عمليات مسجّلة على الكارت ده لحد دلوقتي.
+                      </p>
+                    ) : (
+                      (cardDetail.timeline || []).map((t: any, i: number) => {
+                        const isCharge = t.kind === "charge";
+                        const items = (t.items || []).map((x: any) => `${x.name} ×${x.quantity}`).join(" + ");
+                        return (
+                          <div key={i} className="grid grid-cols-[78px_62px_78px_1fr] gap-2 px-2.5 py-2 text-[11px] font-bold items-start">
+                            <span className="font-mono text-[#555555] leading-5">{t.date || "—"}</span>
+                            <span
+                              className="px-1.5 py-0.5 rounded text-[10px] font-black text-white text-center"
+                              style={{ background: isCharge ? "#2980b9" : "#c0392b" }}
+                            >
+                              {isCharge ? "شحن" : "صرف"}
+                            </span>
+                            <span className="font-mono text-left leading-5" style={{ color: isCharge ? "#2980b9" : "#c0392b" }}>
+                              {isCharge ? "+" : "−"}
+                              {Number(t.amount || 0).toFixed(2)}
+                            </span>
+                            <span className="leading-5 min-w-0">
+                              {isCharge ? (
+                                <span className="text-[#000000]">
+                                  {t.note || "شحن قيمة الكارت"}
+                                  {t.invoice_number ? ` · ${t.invoice_number}` : ""}
+                                </span>
+                              ) : (
+                                <span className="text-[#000000]">
+                                  {t.invoice_number}
+                                  {items ? ` — ${items}` : ""}
+                                  {Number(t.bread_points || 0) > 0 ? ` · نقاط خبز ${Number(t.bread_points).toFixed(2)}` : ""}
+                                  {Number(t.bonus || 0) > 0 ? ` · حافز ${Number(t.bonus).toFixed(2)}` : ""}
+                                  {` · الإجمالي ${Number(t.total || 0).toFixed(2)}`}
+                                </span>
+                              )}
+                              {t.created_by ? (
+                                <span className="block text-[10px] text-[#888888]">بواسطة: {t.created_by}</span>
+                              ) : null}
+                            </span>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setCardDetailOpen(false)}
+                  className="w-full h-10 bg-[#222222] hover:bg-[#000000] text-[#c3c6bb] font-black text-xs rounded-xl cursor-pointer"
+                >
+                  إغلاق
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      )}
+
+      {/* نافذة «سدد» — بحث عن زبون ثم صفحة منبثقة ببياناته والتعامل على الخزنة */}
+      {/* نافذة «سداد دين» — صندوقا «دين لينا» / «دين علينا» + بحث عن الشخص (زبون أو مورّد) وتنفيذ على الخزنة */}
+      {settleOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4 no-print">
+          <div className="bg-[#c3c6bb] border-2 border-[#222222] rounded-xl p-4 w-[92%] max-w-lg relative space-y-3 text-right shadow-2xl max-h-[92vh] overflow-y-auto">
+            <button
+              type="button"
+              onClick={() => { setSettleOpen(false); setSettleSelected(null); setSettleError(""); }}
+              className="absolute top-3 left-3 w-8 h-8 flex items-center justify-center bg-[#b8bcb2] hover:bg-[#222222] hover:text-[#c3c6bb] border border-[#888888] rounded-lg cursor-pointer"
+            >
+              <X size={16} />
+            </button>
+
+            <h3 className="font-extrabold text-sm text-[#000000] border-b border-[#888888] pb-2 pr-1">
+              {settleSelected
+                ? `${settleSelected.kind === "customer" ? "حساب الزبون" : "حساب المورّد"} — ${settleSelected.name}`
+                : settleDir === "deposit" ? "سداد دين — دين لينا (فلوس داخلة)" : "سداد دين — دين علينا (فلوس خارجة)"}
+            </h3>
+
+            {settleError && (
+              <p className="bg-[#b8bcb2] text-[#000000] border border-[#222222] p-2 text-xs font-bold">
+                {settleError}
+              </p>
+            )}
+
+            {!settleSelected ? (
+              /* ── المرحلة ١: صندوقا الاتجاه + البحث عن الشخص ── */
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => { setSettleDir("withdraw"); setSettleError(""); }}
+                    className="rounded-xl border-2 px-3 py-2.5 text-right transition-colors cursor-pointer"
+                    style={{
+                      background: settleDir === "withdraw" ? "#222222" : "#ffffff",
+                      borderColor: settleDir === "withdraw" ? "#222222" : "#888888",
+                      color: settleDir === "withdraw" ? "#c3c6bb" : "#000000",
+                    }}
+                  >
+                    <span className="block text-xs font-black">دين علينا</span>
+                    <span className="block text-[10px] font-bold mt-0.5 opacity-80">
+                      فلوس خارجة — تخصم من الخزنة
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setSettleDir("deposit"); setSettleError(""); }}
+                    className="rounded-xl border-2 px-3 py-2.5 text-right transition-colors cursor-pointer"
+                    style={{
+                      background: settleDir === "deposit" ? "#222222" : "#ffffff",
+                      borderColor: settleDir === "deposit" ? "#222222" : "#888888",
+                      color: settleDir === "deposit" ? "#c3c6bb" : "#000000",
+                    }}
+                  >
+                    <span className="block text-xs font-black">دين لينا</span>
+                    <span className="block text-[10px] font-bold mt-0.5 opacity-80">
+                      فلوس داخلة — تزود الخزنة
+                    </span>
+                  </button>
+                </div>
+
+                <div className="relative">
+                  <input
+                    type="text"
+                    autoFocus
+                    value={settleQuery}
+                    onChange={(e) => setSettleQuery(e.target.value)}
+                    placeholder="ابحث باسم الشخص أو الرقم السري أو التليفون..."
+                    className="w-full h-9 bg-white border border-[#888888] pr-9 pl-3 text-right text-xs font-bold text-[#000000] focus:outline-none focus:border-[#222222] rounded-lg"
+                  />
+                  <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none text-[#555555]">
+                    <Search size={15} />
+                  </div>
+                </div>
+
+                <div className="border border-[#888888] divide-y divide-[#888888]/50 max-h-[46vh] overflow-y-auto rounded-lg bg-white">
+                  {settleLoading ? (
+                    <p className="p-3 text-xs font-bold text-[#555555] text-center">جاري تحميل الحسابات...</p>
+                  ) : settleResults.length === 0 ? (
+                    <p className="p-3 text-xs font-bold text-[#555555] text-center">
+                      {settleAccounts.length === 0
+                        ? "مفيش حسابات مسجّلة لحد دلوقتي"
+                        : `مفيش أشخاص في «${settleDir === "deposit" ? "اللي لينا" : "اللي علينا"}»`}
+                    </p>
+                  ) : (
+                    settleResults.map((p: any) => (
+                      <div
+                        key={p.key}
+                        onClick={() => {
+                          setSettleSelected(p);
+                          setSettleForm({ payment_source: paymentSource, amount: 0, note: "" });
+                          setSettleError("");
+                        }}
+                        className="p-2.5 hover:bg-[#e8e8e8] cursor-pointer flex items-center justify-between gap-2 text-xs"
+                      >
+                        <div className="min-w-0">
+                          <p className="font-extrabold text-[#000000] truncate">{p.name}</p>
+                          <p className="text-[10px] text-[#555555] font-bold font-mono">
+                            {[p.kind === "supplier" ? "مورّد" : p.secret_number, p.phone].filter(Boolean).join(" · ") || "—"}
+                          </p>
+                        </div>
+                        <span
+                          className="shrink-0 px-2 py-0.5 rounded-lg text-[10px] font-black font-mono text-white"
+                          style={{ background: Number(p.balance || 0) > 0.001 ? "#c0392b" : "#27ae60" }}
+                        >
+                          {settleBadge(p)}
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                <p className="text-[10px] font-bold text-[#555555]">
+                  {settleDir === "deposit"
+                    ? "«دين لينا» = تحصيل من الزبون أو ردّ مقدّم من المورّد (يزوّد الخزنة)."
+                    : "«دين علينا» = ردّ فلوس للزبون أو سداد للمورّد (يخصم من الخزنة)."}
+                </p>
+              </div>
+            ) : (
+              /* ── المرحلة ٢: صفحة الشخص المنبثقة ── */
+              <div className="space-y-3">
+                <button
+                  type="button"
+                  onClick={() => { setSettleSelected(null); setSettleError(""); }}
+                  className="h-7 px-2.5 bg-[#b8bcb2] hover:bg-[#888888] border border-[#888888] text-[10px] font-bold text-[#000000] flex items-center gap-1 cursor-pointer rounded-lg"
+                >
+                  &rarr; رجوع لقائمة الحسابات
+                </button>
+
+                <div className="bg-white border border-[#888888] rounded-lg p-3 space-y-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-bold text-[#555555]">{settleSelected.kind === "supplier" ? "النوع" : "الرقم السري"}</span>
+                    <span className="text-[11px] font-black font-mono text-[#000000]">
+                      {settleSelected.kind === "supplier" ? "مورّد" : settleSelected.secret_number || "—"}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-bold text-[#555555]">التليفون</span>
+                    <span className="text-[11px] font-black font-mono text-[#000000]">{settleSelected.phone || "—"}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-bold text-[#555555]">آخر نشاط</span>
+                    <span className="text-[11px] font-black font-mono text-[#000000]">
+                      {settleSelected.ref?.last_activity || settleSelected.ref?.last_activity_date || "—"}
+                    </span>
+                  </div>
+                </div>
+
+                <div
+                  className={`border-2 rounded-lg p-3 text-center ${
+                    settleDir === "deposit"
+                      ? "border-[#27ae60] bg-[#eafaf1]"
+                      : "border-[#c0392b] bg-[#fdecea]"
+                  }`}
+                >
+                  <p className="text-[11px] font-bold text-[#555555]">
+                    {settleDir === "deposit"
+                      ? settleSelected.kind === "customer"
+                        ? "الزبون ليّا عليه — تحصيل يزود الخزنة"
+                        : "محفوظ عند المورّد — ردّ مقدّم يزود الخزنة"
+                      : settleSelected.kind === "customer"
+                      ? "فلوس الزبون محفوظة عندك — ردّ يخصم من الخزنة"
+                      : "المورّد ليه علينا — سداد يخصم من الخزنة"}
+                  </p>
+                  <p
+                    className={`text-2xl font-black font-mono ${
+                      settleDir === "deposit" ? "text-[#27ae60]" : "text-[#c0392b]"
+                    }`}
+                  >
+                    {Math.abs(settleBalance).toFixed(2)} <span className="text-sm">ج.م</span>
+                  </p>
+                </div>
+
+                {settleDirection === "zero" ? (
+                  <p className="bg-[#b8bcb2] text-[#000000] border border-[#222222] p-2 text-xs font-bold text-center">
+                    مفيش مبلغ مطلوب — مفيش حاجة تتخصم أو تتضاف
+                  </p>
+                ) : (
+                  <form onSubmit={(e) => { e.preventDefault(); submitSettle(); }} className="space-y-3 text-xs font-bold">
+                    <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+                      <div>
+                        <label className="block text-[#000000] mb-1">المبلغ (ج.م)</label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.5"
+                          autoFocus
+                          value={settleForm.amount || ""}
+                          onChange={(e) => setSettleForm({ ...settleForm, amount: parseFloat(e.target.value) || 0 })}
+                          placeholder={Math.abs(settleBalance).toFixed(2)}
+                          className="w-full h-9 bg-white border border-[#888888] px-3 text-right text-xs font-bold font-mono text-[#000000] focus:outline-none focus:border-[#222222] rounded-lg"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[#000000] mb-1">المصدر</label>
+                        <select
+                          value={settleForm.payment_source}
+                          onChange={(e) => setSettleForm({ ...settleForm, payment_source: e.target.value })}
+                          className="w-full h-9 bg-white border border-[#888888] px-2 text-right text-xs font-bold text-[#000000] cursor-pointer focus:outline-none focus:border-[#222222] rounded-lg"
+                        >
+                          <option value="cash_register">درج الكاشير</option>
+                          <option value="main_safe">الخزنة الرئيسية</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[#000000] mb-1">ملاحظة</label>
+                      <input
+                        type="text"
+                        value={settleForm.note}
+                        onChange={(e) => setSettleForm({ ...settleForm, note: e.target.value })}
+                        placeholder="سبب العملية (اختياري)..."
+                        className="w-full h-9 bg-white border border-[#888888] px-3 text-right text-xs font-bold text-[#000000] focus:outline-none focus:border-[#222222] rounded-lg"
+                      />
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={settleSaving}
+                      className={`w-full h-11 text-white font-black text-xs transition-colors cursor-pointer disabled:opacity-50 rounded-xl ${
+                        settleDir === "deposit"
+                          ? "bg-[#27ae60] hover:bg-[#219a52]"
+                          : "bg-[#c0392b] hover:bg-[#a93226]"
+                      }`}
+                    >
+                      {settleSaving
+                        ? "جاري التنفيذ..."
+                        : (() => {
+                            const srcLabel = settleForm.payment_source === "cash_register" ? "درج الكاشير" : "الخزنة الرئيسية";
+                            const amt = (Number(settleForm.amount) || 0) > 0 ? Number(settleForm.amount) : Math.abs(settleBalance);
+                            const v = amt.toFixed(2);
+                            if (settleSelected.kind === "customer") {
+                              return settleDir === "deposit"
+                                ? `تحصيل ${v} ج.م من الزبون وإضافتها لـ${srcLabel}`
+                                : `ردّ ${v} ج.م للزبون وخصمها من ${srcLabel}`;
+                            }
+                            return settleDir === "deposit"
+                              ? `ردّ مقدّم ${v} ج.م من المورّد وإضافتها لـ${srcLabel}`
+                              : `سداد ${v} ج.م للمورّد وخصمها من ${srcLabel}`;
+                          })()}
+                    </button>
+                  </form>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Invoice History Modal */}
       {showInvoiceHistory && (
@@ -2635,12 +4188,25 @@ if (true) {
                   </div>
                 )}
 
-                {printData.tamweenDiscount > 0 && (
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "2px" }}>
-                    <span>خصم البطاقة التموينية:</span>
-                    <span style={{ fontFamily: "monospace" }}>-{(printData.tamweenDiscount || 0).toFixed(2)} ج.م</span>
-                  </div>
-                )}
+                {printData.tamweenDiscount > 0 && (() => {
+                  const cardGoods = (printData.cardItems || []).join(" + ");
+                  return (
+                    <>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "2px" }}>
+                        <span>صرف من بطاقة التموين:</span>
+                        <span style={{ fontFamily: "monospace" }}>
+                          -{(printData.tamweenDiscount || 0).toFixed(2)} ج.م{cardGoods ? ` (${cardGoods.length > 46 ? cardGoods.slice(0, 46) + "…" : cardGoods})` : ""}
+                        </span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "2px" }}>
+                        <span>فاضل على الزبون:</span>
+                        <span style={{ fontFamily: "monospace" }}>
+                          {Number(printData.cardRemainingAfter ?? printData.cardRemaining ?? 0).toFixed(2)} ج.م
+                        </span>
+                      </div>
+                    </>
+                  );
+                })()}
 
                 {printData.breadPoints > 0 && (
                   <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "2px" }}>
@@ -2729,22 +4295,6 @@ if (true) {
                         const isWithdrawn = isActive && c.status === "withdrawn";
                         const isLater = isActive && c.status === "later";
 
-                        // Convert card_value back to tamweenCards indices
-                        const tamweenValues = [0, 48.5, 98.5, 148.5, 198.5, 223.5, 248.5, 273.5, 299.5, 323.5, 348.5];
-                        const cardValue = c.card_value || 0;
-                        const selectedCards: number[] = [];
-                        let remainingValue = cardValue;
-                        for (let i = tamweenValues.length - 1; i >= 1; i--) {
-                          while (remainingValue >= tamweenValues[i] && selectedCards.length < 10) {
-                            selectedCards.push(i);
-                            remainingValue -= tamweenValues[i];
-                          }
-                        }
-                        // أي فاضل مش مكوّن من الكروت الجاهزة → بطاقة يدوية عشان المجموع يظبط بالظبط
-                        if (remainingValue > 0.01) {
-                          selectedCards.push(Math.round(remainingValue * 100) / 100);
-                        }
-
                         return (
                           <div key={c.id} className="p-3 text-black font-bold text-xs space-y-2">
                             <div className="flex justify-between items-center">
@@ -2784,8 +4334,11 @@ if (true) {
                                       if (res.ok) {
                                         setCustomerName(c.name);
                                         setSecretNumber(c.secret_number);
-                                        setBreadPoints(c.bread_points);
-                                        setTamweenCards(selectedCards);
+                                        setTamweenCustomerId(typeof c.id === "number" ? c.id : null);
+                                        pendingRestoreRef.current = false;
+                                        // طلب 57 «تتشال وأكتب بإيدي»: الخانات تبدأ فاضية (رصيده ظاهر فوق في الصف)
+                                        setBreadPoints(0);
+                                        setTamweenCards([]);
                                         setShowCustomerSearch(false);
                                         setCustomerSearchQuery("");
                                         setCustomerSearchResults([]);
@@ -2805,8 +4358,11 @@ if (true) {
                                       if (res.ok) {
                                         setCustomerName(c.name);
                                         setSecretNumber(c.secret_number);
-                                        setBreadPoints(c.bread_points);
-                                        setTamweenCards(selectedCards);
+                                        setTamweenCustomerId(typeof c.id === "number" ? c.id : null);
+                                        pendingRestoreRef.current = false;
+                                        // طلب 57 «تتشال وأكتب بإيدي»: الخانات تبدأ فاضية (رصيده ظاهر فوق في الصف)
+                                        setBreadPoints(0);
+                                        setTamweenCards([]);
                                         setShowCustomerSearch(false);
                                         setCustomerSearchQuery("");
                                         setCustomerSearchResults([]);
@@ -2888,11 +4444,11 @@ if (true) {
                     <label className="block text-[#000000] mb-1 text-xs font-bold">مبلغ البطاقة (ج.م)</label>
                     <input
                       type="number"
-                      step="0.01"
-                      min="0"
+                      step="1"
+                      min="1"
                       value={newCustomerCardValue || ""}
                       onChange={(e) => setNewCustomerCardValue(Number(e.target.value) || 0)}
-                      placeholder="0.00"
+                      placeholder="48"
                       className="w-full h-9 bg-[#b8bcb2] border border-[#888888] px-3 text-right text-xs font-bold text-[#000000] focus:outline-none focus:border-[#222222]"
                     />
                   </div>
@@ -2923,15 +4479,23 @@ if (true) {
                           name: newCustomerName.trim(),
                           secret_number: newCustomerSecret.trim(),
                           phone: newCustomerPhone.trim(),
-                          card_value: newCustomerCardValue,
-                          bread_points: newCustomerBreadPoints,
+                          // طلب 57: التسجيل من غير قيم (0/0) — القيم اللي كتبها طازجة وتتشحن مع حفظ الفاتورة (مرة واحدة بس)
+                          card_value: 0,
+                          bread_points: 0,
                         }),
                       });
                       const result = await res.json();
                       if (res.ok && result.success) {
                         setCustomerName(result.customer.name);
                         setSecretNumber(result.customer.secret_number);
-                        setBreadPoints(result.customer.bread_points);
+                        // القيم اللي كتبها في النموذج تروح لحقول الفاتورة (طازجة — هتتشحن مع الحفظ)
+                        setBreadPoints(Math.max(0, Number(newCustomerBreadPoints) || 0));
+                        const tvNew = [0, 48, 98, 148, 198, 223, 248, 273, 298, 323, 348];
+                        const ncCards: number[] = [];
+                        let ncRem = Math.max(0, Number(newCustomerCardValue) || 0);
+                        for (let i = tvNew.length - 1; i >= 1; i--) { while (ncRem >= tvNew[i] && ncCards.length < 10) { ncCards.push(i); ncRem -= tvNew[i]; } }
+                        if (ncRem > 0.01) ncCards.push(Math.round(ncRem * 100) / 100);
+                        setTamweenCards(ncCards);
                         setShowCustomerSearch(false);
                         setCustomerSearchQuery("");
                         setCustomerSearchResults([]);
@@ -2958,6 +4522,38 @@ if (true) {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* مربع أحمر تحذيري في منتصف الصفحة — الأخطاء بس، بينزل بعد الضغط على «حفظ وتأكيد» أو فشل أي خطوة */}
+      {error && (
+        <div className="fixed inset-0 z-[95] flex items-center justify-center p-4" style={{ direction: "rtl" }}>
+          <div className="absolute inset-0 bg-black/55" />
+          <div
+            key={`${errorTick}:${error}`}
+            className="cap-shake relative w-full max-w-md bg-white border-2 border-[#c0392b] rounded-xl shadow-2xl overflow-hidden"
+            role="alertdialog"
+            aria-modal="true"
+          >
+            <div className="bg-[#c0392b] text-white px-4 py-2.5 flex items-center gap-2">
+              <AlertTriangle size={18} strokeWidth={2} className="shrink-0" />
+              <p className="text-sm font-black">تنبيه — الفاتورة مقدرتش تتسجّل</p>
+            </div>
+            <div className="p-4">
+              <p className="text-xs font-black text-[#9b1c1c] leading-6 bg-[#fdecea] border border-[#c0392b] rounded-lg p-3">
+                {error}
+              </p>
+            </div>
+            <div className="px-4 pb-4 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setError("")}
+                className="h-9 px-6 bg-[#c0392b] hover:bg-[#a93226] text-white font-black text-xs rounded-lg cursor-pointer transition-colors"
+              >
+                تمام
+              </button>
+            </div>
           </div>
         </div>
       )}

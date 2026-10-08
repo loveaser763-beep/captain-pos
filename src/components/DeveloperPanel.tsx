@@ -15,7 +15,7 @@ import {
   HardDrive,
   KeyRound
 } from "lucide-react";
-import { authFetch } from "../authFetch";
+import { authFetch, authDownload } from "../authFetch";
 import { User } from "../types";
 import LicenseCenter from "./LicenseCenter";
 
@@ -572,6 +572,7 @@ export default function DeveloperPanel({ currentUser }: DeveloperPanelProps) {
               <a
                 href="/api/backup/download-sqlite"
                 download
+                onClick={(e) => { e.preventDefault(); authDownload("/api/backup/download-sqlite"); }}
                 className="w-full h-10 bg-[#222222] hover:bg-[#000000] text-[#c3c6bb] font-extrabold text-xs flex items-center justify-center gap-x-4 gap-y-2 cursor-pointer transition-colors"
               >
                 <HardDrive size={16} />
@@ -581,6 +582,7 @@ export default function DeveloperPanel({ currentUser }: DeveloperPanelProps) {
               <a
                 href="/api/backup/download-json"
                 download
+                onClick={(e) => { e.preventDefault(); authDownload("/api/backup/download-json"); }}
                 className="w-full h-10 bg-[#b8bcb2] hover:bg-[#222222] hover:text-[#c3c6bb] border border-[#888888] text-[#000000] font-extrabold text-xs flex items-center justify-center gap-x-4 gap-y-2 cursor-pointer transition-colors"
               >
                 <Download size={16} />

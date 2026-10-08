@@ -19,7 +19,7 @@ import {
   Printer
 } from "lucide-react";
 import { User } from "../types";
-import { authFetch } from "../authFetch";
+import { authFetch, authDownload } from "../authFetch";
 
 interface SettingsProps {
   currentUser: User | null;
@@ -753,6 +753,7 @@ export default function Settings({ currentUser }: SettingsProps) {
             <a
               href="/api/backup/download-sqlite"
               download
+              onClick={(e) => { e.preventDefault(); authDownload("/api/backup/download-sqlite"); }}
               className="h-10 px-4 bg-[#222222] hover:bg-[#000000] text-[#c3c6bb] font-extrabold text-xs flex items-center justify-center gap-x-4 gap-y-2 transition-colors cursor-pointer w-full text-center"
             >
               <Download size={16} strokeWidth={1.5} />
@@ -833,6 +834,7 @@ export default function Settings({ currentUser }: SettingsProps) {
             <a
               href="/api/backup/download-json"
               download
+              onClick={(e) => { e.preventDefault(); authDownload("/api/backup/download-json"); }}
               className="h-10 px-4 bg-[#222222] hover:bg-[#000000] text-[#c3c6bb] font-extrabold text-xs flex items-center justify-center gap-x-4 gap-y-2 transition-colors cursor-pointer w-full text-center"
             >
               <Download size={16} strokeWidth={1.5} />
@@ -881,6 +883,7 @@ export default function Settings({ currentUser }: SettingsProps) {
                     <a
                       href={`/api/system/snapshot/download/${s.name}`}
                       download
+                      onClick={(e) => { e.preventDefault(); authDownload(`/api/system/snapshot/download/${s.name}`); }}
                       className="px-3 py-1.5 bg-[#222222] text-[#c3c6bb] text-[11px] font-extrabold hover:bg-[#000000] transition-colors whitespace-nowrap"
                     >
                       تنزيل

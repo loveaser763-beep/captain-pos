@@ -9,6 +9,7 @@ import { execFile } from "child_process";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { licenseStatus, activateLicense, loadIssuedLog, recordIssued, updateIssuedNote, setIssuedRevoked } from "./license-core";
+import { localDateStr } from "./src/localDate";
 // ملحوظة: vite تُستورد ديناميكياً داخل وضع التطوير فقط — نسخة التشغيل المجمّعة لا تعتمد عليها.
 
 const _currentDir = typeof __dirname !== 'undefined' ? __dirname : path.dirname(process.argv[1] || '.');
@@ -104,6 +105,30 @@ async function startServer() {
       return res.status(403).json({ error: "محتاج صلاحيات Admin" });
     }
     next();
+  };
+
+  // بوابة الصلاحيات — الواجهة بتخفي الأزرار عن غير المخوّل، لكن الـ API لوحدها
+  // كان مفتوح لأي مستخدم مسجّل الدخول (كاشير يقدر يمسح فاتورة/صنف من غير UI).
+  // admin و developer عندهم كل الصلاحيات دايمًا، والباقي بيتقرأ من جدول users.
+  const requirePermission = (perm: string) => {
+    return async (req: any, res: any, next: any) => {
+      try {
+        const role = req.user?.role;
+        if (role === "admin" || role === "developer") return next();
+        const uid = req.user?.id;
+        if (!uid) return res.status(401).json({ error: "غير مصرح - سجل دخول أولاً" });
+        const row: any = await dbGet("SELECT permissions FROM users WHERE id = ?", [uid]);
+        let perms: string[] = [];
+        try {
+          const parsed = JSON.parse(row?.permissions || "[]");
+          if (Array.isArray(parsed)) perms = parsed.map((p: any) => String(p));
+        } catch { perms = []; }
+        if (perms.includes(perm)) return next();
+        return res.status(403).json({ error: `مفيش صلاحية (${perm}) — راجع المدير` });
+      } catch {
+        return res.status(500).json({ error: "فشل التحقق من الصلاحية" });
+      }
+    };
   };
 
   // ============================================
@@ -303,6 +328,39 @@ async function startServer() {
     )
   `);
 
+  // دفتر حسابات الموردين (رصيد افتتاحي + سداد) — بيتحدّث مع الخزنة
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS supplier_ledger (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      supplier_id INTEGER,
+      supplier_name TEXT,
+      type TEXT,
+      amount REAL,
+      note TEXT DEFAULT '',
+      created_by TEXT DEFAULT '',
+      created_at TEXT
+    )
+  `);
+
+  // مستحقات نقاط الخبز: بتتجمع من فواتير البيع وتترد مرة واحدة (تحويل للخزينة)
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS bread_settlements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      date TEXT,
+      amount REAL,
+      note TEXT DEFAULT '',
+      created_by TEXT DEFAULT '',
+      created_at TEXT
+    )
+  `);
+  for (const col of [
+    "ALTER TABLE bread_settlements ADD COLUMN period TEXT",
+    "ALTER TABLE bread_settlements ADD COLUMN expected REAL DEFAULT 0",
+    "ALTER TABLE bread_settlements ADD COLUMN fee REAL DEFAULT 0",
+  ]) {
+    try { await dbRun(col); } catch (e) { /* العمود موجود */ }
+  }
+
   try {
     await dbRun("ALTER TABLE expenses ADD COLUMN payment_source TEXT DEFAULT 'cash_register'");
   } catch (e) {
@@ -347,6 +405,51 @@ async function startServer() {
 
   try {
     await dbRun("ALTER TABLE invoice_items ADD COLUMN returned_quantity INTEGER DEFAULT 0");
+  } catch (err) {
+    // Column already exists, ignore
+  }
+
+  // ==================== تقفيل الصندوق ====================
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS drawer_closings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      date TEXT UNIQUE,
+      counted REAL,
+      expected REAL,
+      diff REAL,
+      counted_json TEXT,
+      note TEXT,
+      created_by TEXT,
+      created_at TEXT
+    )
+  `);
+
+  // مرتجعات نقدية — عشان نظام التقفيل يعرف يفصل بين "دخل وخرج في نفس اليوم" و"خرج بعد تقفيلة سابقة"
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS drawer_refunds (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      invoice_id INTEGER,
+      invoice_number TEXT,
+      invoice_type TEXT,
+      invoice_date TEXT,
+      refund_amount REAL,
+      paid_reduction REAL,
+      payment_source TEXT,
+      payment_method TEXT,
+      refund_date TEXT,
+      refund_at TEXT,
+      created_by TEXT
+    )
+  `);
+
+  try {
+    await dbRun("ALTER TABLE invoices ADD COLUMN returned_at TEXT");
+  } catch (err) {
+    // Column already exists, ignore
+  }
+
+  try {
+    await dbRun("ALTER TABLE treasury_transactions ADD COLUMN invoice_id INTEGER");
   } catch (err) {
     // Column already exists, ignore
   }
@@ -419,7 +522,7 @@ async function startServer() {
     CREATE TABLE IF NOT EXISTS tamween_customers (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
-      secret_number TEXT UNIQUE,
+      secret_number TEXT,
       phone TEXT DEFAULT '',
       card_value REAL DEFAULT 0,
       bread_points REAL DEFAULT 0,
@@ -453,6 +556,164 @@ async function startServer() {
   } catch (e: any) {
     console.log("[Migration] tamween_customers table might not exist, will be created by CREATE TABLE IF NOT EXISTS above");
   }
+
+  // ترحيل (طلب 50): الرقم السري مسموح يتكرر مع أكتر من زبون (قاعدة الكابتن — طلب 39)
+  // وSQLite ما بتشيلش قيد UNIQUE بـ ALTER → نعيد بناء الجدول بنفس الأعمدة بدونه
+  try {
+    const tcMaster: any = await dbGet("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tamween_customers'");
+    const tcSql = String(tcMaster?.sql || "");
+    if (/secret_number\s+TEXT\s+UNIQUE/i.test(tcSql)) {
+      const migSql = tcSql
+        .replace(/secret_number\s+TEXT\s+UNIQUE/i, "secret_number TEXT")
+        .replace(/CREATE TABLE\s+(IF NOT EXISTS\s+)?tamween_customers\s*\(/i, "CREATE TABLE tamween_customers_mig (");
+      if (!migSql.includes("tamween_customers_mig")) throw new Error("تعذّرت إعادة بناء جدول tamween_customers");
+      await dbRun("BEGIN");
+      await dbRun("DROP TABLE IF EXISTS tamween_customers_mig");
+      await dbRun(migSql);
+      await dbRun("INSERT INTO tamween_customers_mig SELECT * FROM tamween_customers");
+      await dbRun("DROP TABLE tamween_customers");
+      await dbRun("ALTER TABLE tamween_customers_mig RENAME TO tamween_customers");
+      await dbRun("COMMIT");
+      try {
+        await dbRun(
+          "INSERT OR REPLACE INTO sqlite_sequence (name, seq) SELECT 'tamween_customers', COALESCE(MAX(id), 0) FROM tamween_customers"
+        );
+      } catch { /* تثبيت معرّف البداية لو احتاج */ }
+      console.log("[Migration] tamween_customers: اتشال قيد UNIQUE عن secret_number — الرقم السري بقى مسموح يتكرر مع أكتر من زبون");
+    }
+  } catch (e: any) {
+    try { await dbRun("ROLLBACK"); } catch { /* مفيش حاجة تترجّع */ }
+    console.log("[Migration] tamween_customers UNIQUE removal skipped:", e.message);
+  }
+
+  // دفتر بطاقات التموين: كل شحن (قيمة كارت) سطر — المتبقي = الشحنات − المصروف من الفواتير
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS tamween_card_ledger (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      customer_id INTEGER,
+      secret_number TEXT,
+      month TEXT DEFAULT '',
+      type TEXT,
+      amount REAL,
+      note TEXT DEFAULT '',
+      invoice_id INTEGER,
+      invoice_number TEXT,
+      created_by TEXT DEFAULT '',
+      created_at TEXT
+    )
+  `);
+
+  // ترحيل: قيمة البطاقة الحالية تتسجّل كأول شحن (مرة واحدة فقط — لو الدفتر فاضي)
+  try {
+    const ledCount: any = await dbGet("SELECT COUNT(*) AS c FROM tamween_card_ledger");
+    if (!Number(ledCount?.c || 0)) {
+      const legacy: any[] = await dbAll(
+        "SELECT id, secret_number, card_value, status_month, created_at FROM tamween_customers WHERE COALESCE(card_value,0) > 0"
+      );
+      for (const c of legacy) {
+        await dbRun(
+          `INSERT INTO tamween_card_ledger (customer_id, secret_number, month, type, amount, note, created_by, created_at)
+           VALUES (?, ?, ?, 'شحن', ?, ?, 'SYSTEM', ?)`,
+          [c.id, c.secret_number || "", String(c.status_month || "").slice(0, 7) || new Date().toISOString().slice(0, 7),
+           Number(c.card_value || 0), "ترحيل قيمة البطاقة", c.created_at || new Date().toISOString()]
+        );
+      }
+      if (legacy.length) console.log(`[Migration] Card ledger backfilled for ${legacy.length} customers`);
+    }
+  } catch (e: any) {
+    console.log("[Migration] card ledger backfill skipped:", e.message);
+  }
+
+  // حالة بطاقة الزبون: الشحنات (الدفتر) − المصروف (من الفواتير — مصدر الحقيقة)
+  const getCardLedgerWhere = (customerId: number | null, secret: string) => ({
+    sql: customerId ? "customer_id = ?" : "(? != '' AND secret_number = ?)",
+    params: customerId ? [customerId] : [secret || "", secret || ""],
+  });
+  const getCardState = async (customerId: number | null, secret: string) => {
+    const w = getCardLedgerWhere(customerId, secret);
+    const topRow: any = await dbGet(
+      `SELECT COALESCE(SUM(amount),0) AS topped FROM tamween_card_ledger WHERE type = 'شحن' AND ${w.sql}`,
+      w.params
+    );
+    const spentRow: any = await dbGet(
+      `SELECT COALESCE(SUM(tamween_discount),0) AS spent FROM invoices
+       WHERE type = 'sales' AND (status IS NULL OR status != 'returned') AND COALESCE(tamween_discount,0) > 0
+         AND ${customerId ? "tamween_customer_id = ?" : "(? != '' AND secret_number = ?)"}`,
+      w.params
+    );
+    const topped = Number(topRow?.topped || 0);
+    const spent = Number(spentRow?.spent || 0);
+    return { topped, spent, remaining: Number((topped - spent).toFixed(2)) };
+  };
+  // المتبقي موزّع على الشحنات بالترتيب (الأقدم يتقفل الأول)
+  const getCardByMonth = async (customerId: number | null, secret: string) => {
+    const w = getCardLedgerWhere(customerId, secret);
+    const tops: any[] = await dbAll(
+      `SELECT id, month, amount, created_at FROM tamween_card_ledger WHERE type = 'شحن' AND ${w.sql} ORDER BY id ASC`,
+      w.params
+    );
+    const state = await getCardState(customerId, secret);
+    let left = Math.max(0, state.remaining);
+    return tops.map((t) => {
+      const amt = Number(t.amount || 0);
+      const rem = Number(Math.min(amt, left).toFixed(2));
+      left = Number((left - rem).toFixed(2));
+      return { month: t.month, amount: amt, remaining: rem };
+    });
+  };
+  // آخر عملية صرف: الفاتورة + نوع البضاعة اللي خرجت
+  const getCardLastWithdraw = async (customerId: number | null, secret: string) => {
+    const w = getCardLedgerWhere(customerId, secret);
+    const last: any = await dbGet(
+      `SELECT id, invoice_number, date, tamween_discount FROM invoices
+       WHERE type = 'sales' AND (status IS NULL OR status != 'returned') AND COALESCE(tamween_discount,0) > 0
+         AND ${customerId ? "tamween_customer_id = ?" : "(? != '' AND secret_number = ?)"}
+       ORDER BY date DESC, id DESC LIMIT 1`,
+      w.params
+    );
+    if (!last) return null;
+    const items: any[] = await dbAll(
+      "SELECT name, quantity, unit, price, total FROM invoice_items WHERE invoice_id = ? ORDER BY id",
+      [last.id]
+    );
+    return { ...last, items };
+  };
+
+  // ── قاعدة الكابتن: الرقم السري وارد يتكرر مع أكتر من زبون، فالرقم لوحده ما يثبتش الهوية
+  //    والاسم لوحده كمان لأ · المطابقة بين الاسم والرقم السري بتحصل **بس لو اسم الزبون المكتوب عليه/له فلوس**
+  const identityHasMoney = async (name: string): Promise<any[]> => {
+    const nm = String(name || "").trim();
+    if (!nm) return [];
+    const rows: any[] = await dbAll(
+      `SELECT c.id, TRIM(COALESCE(c.secret_number,'')) AS registered_secret, c.card_value, c.bread_points,
+              (SELECT COUNT(*) FROM tamween_card_ledger l WHERE l.customer_id = c.id) AS ledger_rows
+       FROM tamween_customers c WHERE TRIM(c.name) = ? ORDER BY c.id ASC`,
+      [nm]
+    );
+    return rows.filter(
+      (r) => Number(r.card_value || 0) > 0 || Number(r.bread_points || 0) > 0 || Number(r.ledger_rows || 0) > 0
+    );
+  };
+  // { id } = نفس الزبون (الاسم والرقم مع بعض) · { id: null } = مفيش فلوس على الاسم ده → زبون جديد يقدر يستخدم نفس الرقم السري
+  // { error } = الاسم عليه/له فلوس والرقم السري المكتوب مش تابع له → رفض
+  const matchNameSecret = async (name: string, secret: string): Promise<{ id?: number | null; error?: string }> => {
+    const nm = String(name || "").trim();
+    const sec = String(secret || "").trim();
+    if (!nm || !sec) return { error: "لازم الاسم والرقم السري مع بعض — الرقم السري لوحده ما يكفيش." };
+    const both: any = await dbGet(
+      "SELECT id FROM tamween_customers WHERE TRIM(COALESCE(secret_number,'')) = ? AND TRIM(name) = ? ORDER BY id ASC LIMIT 1",
+      [sec, nm]
+    );
+    if (both) return { id: Number(both.id) };
+    const rich = await identityHasMoney(nm);
+    if (rich.length) {
+      const r0 = rich[0];
+      return {
+        error: `الاسم "${nm}" مسجّل ومعاه كارت${r0.registered_secret ? ` (الرقم السري ${r0.registered_secret})` : ""} — الرقم السري المكتوب ${sec} مش تابع له. الاسم والرقم السري لازم يطابقوا نفس الزبون.`,
+      };
+    }
+    return { id: null };
+  };
 
   // Migration: ensure invoices has tamween_discount column
   try {
@@ -490,8 +751,74 @@ async function startServer() {
       await dbRun("ALTER TABLE invoices ADD COLUMN payment_method TEXT DEFAULT 'cash'");
       console.log("[Migration] Added 'payment_method' column to invoices");
     }
+    if (!invColNames.includes("details")) {
+      await dbRun("ALTER TABLE invoices ADD COLUMN details TEXT DEFAULT ''");
+      console.log("[Migration] Added 'details' column to invoices");
+    }
   } catch (e: any) {
     console.log("[Migration] invoices bread_points/bonus migration skipped:", e.message);
+  }
+
+  // Migration: ربط حركات الخزينة القديمة (تحصيل آجل / سداد مشتريات) بفواتيرها.
+  // من غير الربط ده، الجزء المتحصّل من الفاتورة بيتحسب مرتين:
+  // مرة من invoices.paid ومرة تانية من لوب treasury_transactions.
+  // الآمنة (idempotent) — بتشتغل بس على الحركات اللي لسه invoice_id بتاعها NULL.
+  const backfillTxInvoiceId = async (
+    txType: "deposit" | "withdraw",
+    notesPrefix: string,
+    invoiceType: "sales" | "purchases"
+  ) => {
+    try {
+      const r = await dbRun(
+        `UPDATE treasury_transactions
+            SET invoice_id = (
+                  SELECT i.id FROM invoices i
+                   WHERE i.type = ?
+                     AND COALESCE(i.invoice_number, '') <> ''
+                     AND treasury_transactions.notes LIKE ? || i.invoice_number || ' %'
+                   ORDER BY i.id DESC
+                   LIMIT 1
+                )
+          WHERE invoice_id IS NULL
+            AND type = ?
+            AND notes LIKE ? || '%'`,
+        [invoiceType, notesPrefix, txType, notesPrefix]
+      );
+      if (r.changes > 0) {
+        console.log(`[Migration] Backfilled invoice_id on ${r.changes} treasury txs (${notesPrefix.trim()})`);
+      }
+    } catch (e: any) {
+      console.log(`[Migration] treasury invoice_id backfill skipped (${notesPrefix.trim()}):`, e.message);
+    }
+  };
+  await backfillTxInvoiceId("deposit", "تحصيل آجل فاتورة ", "sales");
+  await backfillTxInvoiceId("withdraw", "سداد مشتريات فاتورة ", "purchases");
+
+  // Migration: إضافة invoices.supplier_id وربط فواتير المشتريات القديمة بمورّديها.
+  // من الاسم لـ id عشان لو المورد غيّر اسمه، الفواتير القديمة تفضل مربوطة بيه.
+  try {
+    const invCols = await dbAll("PRAGMA table_info(invoices)");
+    const invColNames = invCols.map((c: any) => c.name);
+    if (!invColNames.includes("supplier_id")) {
+      await dbRun("ALTER TABLE invoices ADD COLUMN supplier_id INTEGER DEFAULT NULL");
+      console.log("[Migration] Added 'supplier_id' column to invoices");
+    }
+    const r = await dbRun(
+      `UPDATE invoices
+          SET supplier_id = (
+                SELECT s.id FROM suppliers s
+                 WHERE TRIM(s.name) = TRIM(invoices.customer_supplier_name)
+                 LIMIT 1
+              )
+        WHERE supplier_id IS NULL
+          AND type = 'purchases'
+          AND COALESCE(TRIM(customer_supplier_name), '') <> ''`
+    );
+    if (r.changes > 0) {
+      console.log(`[Migration] Linked ${r.changes} purchase invoices to suppliers by name`);
+    }
+  } catch (e: any) {
+    console.log("[Migration] invoices supplier_id migration skipped:", e.message);
   }
 
   // Migration: ensure items has is_tamween column
@@ -639,9 +966,12 @@ async function startServer() {
       paid REAL DEFAULT 0,
       invoice_number TEXT DEFAULT '',
       date TEXT DEFAULT '',
-      active_tab_index INTEGER DEFAULT 0
+      active_tab_index INTEGER DEFAULT 0,
+      withdrawal_choice TEXT DEFAULT 'now'
     )
   `);
+
+  try { await dbRun("ALTER TABLE active_carts ADD COLUMN withdrawal_choice TEXT DEFAULT 'now'"); } catch {}
 
   // Migration: held_invoices.tab_index must be UNIQUE for INSERT OR REPLACE upsert.
   // Dedupe legacy duplicates first (keep latest row per tab), then create the index.
@@ -974,6 +1304,18 @@ async function startServer() {
     await ensureUser("admin", "561128", "آسر المدير العام", "admin", adminPermissions);
     await ensureUser("cashier", "cashier123", "إياد الكاشير", "cashier", cashierPermissions);
     await ensureUser("store", "store123", "ياسين أمين المخزن", "storekeeper", storekeeperPermissions);
+
+    // منح صلاحية تقفيل الصندوق لكل كاشير ناقصة (مرة واحدة عند الإقلاع)
+    const cashiers = await dbAll("SELECT id, permissions FROM users WHERE role = 'cashier'");
+    for (const c of cashiers) {
+      let perms: string[] = [];
+      try { perms = JSON.parse(c.permissions || "[]"); } catch { perms = []; }
+      if (!Array.isArray(perms)) perms = [];
+      if (!perms.includes("drawer")) {
+        perms.push("drawer");
+        await dbRun("UPDATE users SET permissions = ? WHERE id = ?", [JSON.stringify(perms), c.id]);
+      }
+    }
   } catch (err) {
     console.error("Error ensuring default users:", err);
   }
@@ -1259,7 +1601,7 @@ async function startServer() {
     }
   });
 
-  app.post("/api/suppliers", async (req, res) => {
+  app.post("/api/suppliers", requirePermission("suppliers"), async (req, res) => {
     try {
       const { name, phone, address, is_tamween_supplier, logCreator } = req.body;
       const isTamweenVal = is_tamween_supplier ? 1 : 0;
@@ -1277,7 +1619,7 @@ async function startServer() {
     }
   });
 
-  app.put("/api/suppliers/:id", async (req, res) => {
+  app.put("/api/suppliers/:id", requirePermission("suppliers"), async (req, res) => {
     try {
       const { id } = req.params;
       const { name, phone, address, is_tamween_supplier, logCreator } = req.body;
@@ -1308,7 +1650,7 @@ async function startServer() {
     }
   });
 
-  app.delete("/api/suppliers/:id", async (req, res) => {
+  app.delete("/api/suppliers/:id", requirePermission("suppliers"), async (req, res) => {
     try {
       const { id } = req.params;
       const { logCreator } = req.query;
@@ -1339,14 +1681,15 @@ async function startServer() {
     }
   });
 
-  app.post("/api/items", async (req, res) => {
+  app.post("/api/items", requirePermission("items"), async (req, res) => {
     try {
-      const { barcode, name, purchase_price, retail_price, wholesale_price, quantity, unit, low_stock_limit, is_unlimited, category, supplier_id, supplier_name, logCreator } = req.body;
+      const { barcode, name, purchase_price, retail_price, wholesale_price, quantity, unit, low_stock_limit, is_unlimited, is_tamween, category, supplier_id, supplier_name, logCreator } = req.body;
       const isUnlimitedVal = is_unlimited ? 1 : 0;
+      const isTamweenVal = is_tamween ? 1 : 0;
       const categoryVal = category || 'عام';
       const result = await dbRun(
-        "INSERT INTO items (barcode, name, purchase_price, retail_price, wholesale_price, quantity, unit, low_stock_limit, is_unlimited, category, supplier_id, supplier_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        [barcode, name, Number(purchase_price), Number(retail_price), Number(wholesale_price), Number(quantity), unit, Number(low_stock_limit), isUnlimitedVal, categoryVal, supplier_id || null, supplier_name || null]
+        "INSERT INTO items (barcode, name, purchase_price, retail_price, wholesale_price, quantity, unit, low_stock_limit, is_unlimited, is_tamween, category, supplier_id, supplier_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [barcode, name, Number(purchase_price), Number(retail_price), Number(wholesale_price), Number(quantity), unit, Number(low_stock_limit), isUnlimitedVal, isTamweenVal, categoryVal, supplier_id || null, supplier_name || null]
       );
 
       await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, 'إضافة صنف', ?)", [
@@ -1361,7 +1704,7 @@ async function startServer() {
     }
   });
 
-  app.put("/api/items/:id", async (req, res) => {
+  app.put("/api/items/:id", requirePermission("items"), async (req, res) => {
     try {
       const { id } = req.params;
       const { barcode, name, purchase_price, retail_price, wholesale_price, quantity, unit, low_stock_limit, is_unlimited, is_tamween, category, supplier_id, supplier_name, logCreator } = req.body;
@@ -1422,7 +1765,7 @@ async function startServer() {
     }
   });
 
-  app.delete("/api/items/:id", async (req, res) => {
+  app.delete("/api/items/:id", requirePermission("items"), async (req, res) => {
     try {
       const { id } = req.params;
       const { logCreator } = req.query;
@@ -1582,23 +1925,36 @@ async function startServer() {
         }
       }
 
+      // مشتريات مدفوعة كاش لازم تيجي من رصيد متفعّل — من غير كده الخزنة بتروح بالسالب
+      const paidNum = Number(paid || 0);
+      if (paidNum > 0.001 && (payment_source === "cash_register" || payment_source === "main_safe")) {
+        const bal = await computeBalances();
+        const available = payment_source === "cash_register" ? bal.cash_register : bal.main_safe;
+        if (paidNum > available + 0.001) {
+          return res.status(400).json({
+            error: `الرصيد غير كافٍ في ${payment_source === "cash_register" ? "الدرج" : "الخزنة"} — المتاح ${available.toFixed(2)} ج.م والمطلوب ${paidNum.toFixed(2)} ج.م.`,
+          });
+        }
+      }
+
       // Wrap in manual SQLite transaction logic / sequence
       const created_at = new Date().toISOString();
-      await dbRun(`
-        INSERT INTO invoices (invoice_number, type, date, customer_supplier_name, payment_source, sale_type, subtotal, tax, discount, total, paid, remaining, created_by, created_at)
-        VALUES (?, 'purchases', ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [invoice_number, date, supplier_name, payment_source, subtotal, tax, discount, total, paid, remaining, created_by, created_at]);
 
-      const invIdRow = await dbGet("SELECT last_insert_rowid() as id");
-      const invoice_id = invIdRow.id;
-
-      // Look up supplier ID if available
+      // نجيب المورد الأول عشان نربط الفاتورة بـ id مش باسمه (الأسماء بتتغيّر)
       let supRecord = null;
       if (supplier_name) {
-        supRecord = await dbGet("SELECT id, name FROM suppliers WHERE name = ?", [supplier_name]);
+        supRecord = await dbGet("SELECT id, name FROM suppliers WHERE TRIM(name) = TRIM(?)", [supplier_name]);
       }
       const supplierId = supRecord ? supRecord.id : null;
       const supplierName = supplier_name || (supRecord ? supRecord.name : null);
+
+      await dbRun(`
+        INSERT INTO invoices (invoice_number, type, date, customer_supplier_name, supplier_id, payment_source, sale_type, subtotal, tax, discount, total, paid, remaining, created_by, created_at)
+        VALUES (?, 'purchases', ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [invoice_number, date, supplier_name, supplierId, payment_source, subtotal, tax, discount, total, paid, remaining, created_by, created_at]);
+
+      const invIdRow = await dbGet("SELECT last_insert_rowid() as id");
+      const invoice_id = invIdRow.id;
 
       for (const item of invoiceItems) {
         // Add invoice item
@@ -1681,48 +2037,286 @@ async function startServer() {
       if (!invoice_number || !Array.isArray(invoiceItems) || invoiceItems.length === 0) {
         return res.status(400).json({ error: "بيانات الفاتورة غير مكتملة." });
       }
-      // حماية محاسبية صارمة: الإجمالي النهائي يجب أن يكون بالموجب دائماً
-      if (!(Number(total) > 0)) {
-        return res.status(400).json({ error: "لا يمكن حفظ الفاتورة — الإجمالي النهائي يجب أن يكون بالموجب." });
+      // ── الكارت والنقاط يتخصموا كاملين (مفيش اقتطاع على البضاعة) — طلب الكابتن 8 ──
+      // بس المبلغ لازم يكتمل: قيمة البضاعة ≥ الكارت + نقاط الخبز، وإلا ناقص بضاعة ويتحرم الحفظ
+      const goodsValue = Math.max(0, Number(subtotal || 0) + Number(tax || 0) - Number(discount || 0));
+      const effTamween = Math.max(0, Number(tamween_discount || 0));
+      const effBread = Math.max(0, Number(bread_points || 0));
+      const creditTotal = effTamween + effBread;
+      // الشحن مع الحفظ (طلب 57): القيمة المكتوبة (كارت + نقاط) شحنة جديدة تتجمع فوق الباقي
+      // البيع المسترجع من «مؤجّلة» اتشحن وقت التعليق → مفيش شحن تاني (held_restore)
+      const skipCharge = !!(req.body as any).held_restore;
+      const cardRawV = Math.max(0, Number((req.body as any).card_value_raw || 0));
+      const breadRawV = Math.max(0, Number((req.body as any).bread_points_raw || 0));
+      if (creditTotal > goodsValue + 0.001) {
+        return res.status(400).json({
+          error: `المبلغ مش مكتمل: قيمة البضاعة ${goodsValue.toFixed(2)} ج.م أقل من الكارت والنقاط ${creditTotal.toFixed(2)} ج.م — ناقص ${(creditTotal - goodsValue).toFixed(2)} ج.م بضاعة. زوّد البضاعة أو قلّل الكارت/النقاط.`,
+        });
       }
-      // كارت تموين: لا موافقة على البيع من غير الاسم والرقم السري والحافز (نقاط الخبز مش شرط)
-      if (Number(tamween_discount) > 0) {
-        if (!(customer_name || "").trim() || !(secret_number || "").trim() || !(Number(bonus) > 0)) {
-          return res.status(400).json({ error: "ملئ الحقول: الكارت التمويني يتطلب الاسم والرقم السري والحافز قبل الموافقة على البيع." });
+      // الحافز يدخل الدرج صافي: صافي البضاعة ما ينزلش تحت الصفر وبعدين نضيف الحافز
+      const goodsNet = Math.max(0, Number((goodsValue - creditTotal).toFixed(2)));
+      const finalTotal = Number((goodsNet + Number(bonus || 0)).toFixed(2));
+      if (!Number.isFinite(finalTotal) || finalTotal < 0) {
+        return res.status(400).json({ error: "لا يمكن حفظ الفاتورة — الإجمالي النهائي مش ممكن يكون بالسالب." });
+      }
+      const effPaid = payment_method === "credit" ? Math.min(Math.max(0, Number(paid) || 0), finalTotal) : finalTotal;
+      const effRemaining = payment_method === "credit" ? Math.max(0, finalTotal - effPaid) : 0;
+      // كارت تموين أو نقاط خبز: لا موافقة على البيع من غير الاسم والرقم السري
+      // الحافز: بيتأمَّر لاحقًا بس مع الصرف الكلي (شوف تحت بعد حساب حالة البطاقة)
+      const needsIdentity = Number(tamween_discount) > 0 || effBread > 0;
+      if (needsIdentity) {
+        if (!(customer_name || "").trim() || !(secret_number || "").trim()) {
+          return res.status(400).json({ error: "ملئ الحقول: الكارت التمويني يتطلب الاسم والرقم السري قبل الموافقة على البيع." });
         }
       }
+
+      // حالة بطاقة الزبون قبل التسجيل: الخصم ما يزدش عن المتبقي (والباقي يتدفع نقدًا)
+      const cardSecret = String(secret_number || "").trim();
+      const cardName = String(customer_name || "").trim();
+      let cardCustomerId: number | null = Number(tamween_customer_id) || null;
+      if (needsIdentity) {
+        // الأرقام السرية بتتكرر بين زبائن — الرقم لوحده مبيثبتش الهوية، والاسم لوحده كمان لأ
+        // المطابقة بين الاتنين بتحصل بس لو اسم الزبون المكتوب عليه/له فلوس (قاعدة الكابتن)
+        if (!cardCustomerId && cardSecret) {
+          const m = await matchNameSecret(cardName, cardSecret);
+          if (m.error) return res.status(400).json({ error: m.error });
+          if (m.id) cardCustomerId = Number(m.id);
+        } else if (cardCustomerId) {
+          const rec: any = await dbGet("SELECT id, TRIM(name) AS name, secret_number FROM tamween_customers WHERE id = ?", [cardCustomerId]);
+          if (rec) {
+            if (String(rec.name || "").trim() !== cardName) {
+              return res.status(400).json({
+                error: `البطاقة المسجّلة باسم "${rec.name}" — الاسم المكتوب "${cardName}" مش مطابق.`,
+              });
+            }
+            if (cardSecret && String(rec.secret_number || "").trim() !== cardSecret) {
+              return res.status(400).json({
+                error: `الرقم السري ${cardSecret} مش تابع لبطاقة "${rec.name}" (المسجّل ${rec.secret_number}).`,
+              });
+            }
+          }
+        }
+      }
+      // ── شرط صريح: لو الزبون (نفس الاسم المكتوب اللي اتحلّ لـ id) صرف الشهر ده → ممنوع أي بيع له لغاية آخر الشهر ──
+      // مفيش بحث بالرقم السري لوحده هنا: زبون جديد (أو اسم مختلف) بنفس الرقم ما يتمنعش بسبب زبون تاني (قاعدة الكابتن)
+      if (cardCustomerId) {
+        const cw: any = await dbGet("SELECT id, TRIM(name) AS name, status, status_month FROM tamween_customers WHERE id = ?", [cardCustomerId]);
+        const curMonthNow = new Date().toISOString().slice(0, 7);
+        if (cw && String(cw.status || "") === "withdrawn" && String(cw.status_month || "").slice(0, 7) === curMonthNow) {
+          return res.status(400).json({
+            error: `تم الصرف هذا الشهر (${curMonthNow}) للزبون ${cw.name} — البيع مرفوض له الشهر ده.`,
+          });
+        }
+      }
+      let cardState: any = null;
+      if (Number(tamween_discount) > 0) {
+        // زبون جديد (مفيش id محلول) → دفتر فاضي، ومنبصش لرصيد زبون تاني عنده نفس الرقم السري
+        cardState = await getCardState(cardCustomerId, cardCustomerId ? cardSecret : "");
+        // المتاح = الباقي + الشحنة المكتوبة (بتتشحن مع الحفظ — طلب 57)
+        const availCard = Number(cardState.remaining || 0) + (skipCharge ? 0 : cardRawV);
+        if (Number(tamween_discount) > availCard + 0.001) {
+          return res.status(400).json({
+            error: `فاضل على بطاقة الزبون ${availCard.toFixed(2)} ج.م فقط — قلّل خصم الكارت والباقي يتدفع نقدًا.`,
+          });
+        }
+        // الحافز: بيتطلب بس مع الصرف الكلي (الكارت هيخلص بعد الفاتورة) — الصرف الجزئي بدونه
+        // (بنحسبه على الخصم الفعلي بعد منع الاقتطاع الزايد عشان يطابق حساب الشاشة)
+        const projectedRemaining = Number(cardState?.remaining || 0) + (skipCharge ? 0 : cardRawV) - effTamween;
+        if (projectedRemaining <= 0.001 && !(Number(bonus) > 0)) {
+          return res.status(400).json({ error: "ملئ الحقول: الحافز مطلوب مع صرف الكارت كليًا." });
+        }
+        if (projectedRemaining > 0.001 && Number(bonus) > 0) {
+          return res.status(400).json({
+            error: `الحافز بيتضاف مع الصرف الكلي بس — الكارت هيفضل فاضل له ${projectedRemaining.toFixed(2)} ج.م بعد الفاتورة، شيل الحافز.`,
+          });
+        }
+      }
+      // نقاط الخبز: نفس سلوك الكارت — الزبون بيتضاف تلقائيًا مع أول صرف (من غير تسجيل مسبق من الكاشير)
+      // وبنمنع الصرف فوق رصيد مسجّل أكبر من صفر بس — عشان الرصيد المسجّل ما يضيعش
+      if (effBread > 0) {
+        if (cardCustomerId) {
+          const breadRow: any = await dbGet("SELECT TRIM(name) AS name, bread_points FROM tamween_customers WHERE id = ?", [cardCustomerId]);
+          const breadBal = Number(breadRow?.bread_points || 0);
+          // المتاح = الرصيد + الشحنة المكتوبة (بتتشحن مع الحفظ — طلب 57) · الرفض بقى لأي زيادة فوق المتاح (شال شرط الرصيد>0 اللي كان بيسمح بالصمت)
+          const availBread = breadBal + (skipCharge ? 0 : breadRawV);
+          if (effBread > availBread + 0.001) {
+            return res.status(400).json({
+              error: `رصيد نقاط الخبز عند الزبون ${breadRow?.name || cardName} هو ${availBread.toFixed(2)} ج.م فقط — قلّل النقاط المكتوبة (${effBread.toFixed(2)}) أو زيّد رصيده من شاشة «كروت التموين».`,
+            });
+          }
+        } else if (!String(cardSecret || "").trim() || !String(customer_name || "").trim()) {
+          return res.status(400).json({
+            error: `نقاط الخبز محتاجة اسم العميل والرقم السري عشان نسجّل${cardName ? ` "${cardName}"` : " الزبون"} تلقائيًا مع أول صرف.`,
+          });
+        }
+      }
+
+      // حدود السكر والزيت — تنطبق بس مع كروت الأفراد الجاهزة (مش اليدوي، ومش من غير كروت)
+      const presetCards: number[] = Array.isArray((req.body as any).preset_cards)
+        ? (req.body as any).preset_cards.map((n: any) => Number(n)).filter((n: number) => Number.isInteger(n) && n >= 1 && n <= 10)
+        : [];
+      if (presetCards.length > 0 && Array.isArray(invoiceItems)) {
+        const CARD_LIMITS: { [k: number]: [number, number] } = {
+          1: [1, 1], 2: [2, 2], 3: [3, 3], 4: [4, 4], 5: [5, 4],
+          6: [6, 4], 7: [6, 4], 8: [6, 4], 9: [6, 4], 10: [6, 4],
+        };
+        // كذا كارت مختار → الحدود بتتجمع (فرد + فرد = سكر 2 وزيت 2) مش أكبر حد
+        let maxSugar = 0;
+        let maxOil = 0;
+        for (const c of presetCards) {
+          const lim = CARD_LIMITS[c];
+          if (lim) { maxSugar += lim[0]; maxOil += lim[1]; }
+        }
+        let sugarQty = 0;
+        let oilQty = 0;
+        let tamweenGoodsTotal = 0;
+        for (const it of invoiceItems) {
+          const nm = String(it.name || "");
+          const qty = Number(it.quantity || 0);
+          const lineTotal = it.total != null && it.total !== "" ? Number(it.total) : Number(it.price || 0) * qty;
+          if (nm.includes("سكر")) sugarQty += qty;
+          if (nm.includes("زيت")) oilQty += qty;
+          const row: any = it.barcode
+            ? await dbGet("SELECT is_tamween FROM items WHERE barcode = ?", [it.barcode])
+            : await dbGet("SELECT is_tamween FROM items WHERE name = ?", [nm]);
+          if (row && Number(row.is_tamween) === 1) tamweenGoodsTotal += lineTotal;
+        }
+        // تراكمي: مسحوب الشهر الحالي على نفس الزبون من فواتير سابقة (صرف جزئي بعد جزئي)
+        let prevSugar = 0;
+        let prevOil = 0;
+        const monthPrefix = String(date || "").slice(0, 7);
+        if (cardCustomerId && monthPrefix) {
+          const prevRows: any[] = await dbAll(
+            `SELECT ii.name, ii.quantity FROM invoice_items ii
+             JOIN invoices i ON i.id = ii.invoice_id
+             WHERE i.type = 'sales' AND (i.status IS NULL OR i.status != 'returned')
+               AND i.tamween_customer_id = ? AND substr(i.date, 1, 7) = ?`,
+            [cardCustomerId, monthPrefix]
+          );
+          for (const r of prevRows) {
+            const nm = String(r.name || "");
+            if (nm.includes("سكر")) prevSugar += Number(r.quantity || 0);
+            if (nm.includes("زيت")) prevOil += Number(r.quantity || 0);
+          }
+        }
+        const totalSugar = prevSugar + sugarQty;
+        const totalOil = prevOil + oilQty;
+        if (totalSugar > maxSugar + 0.001) {
+          return res.status(400).json({ error: `الحد الأقصى لسكر على مجموع الكروت المختارة ${maxSugar} — عندك ${totalSugar} (مسحوب سابقًا ${prevSugar} + الحالي ${sugarQty}). قلّل الكمية أو زوّد كارت.` });
+        }
+        if (totalOil > maxOil + 0.001) {
+          return res.status(400).json({ error: `الحد الأقصى لزيت على مجموع الكروت المختارة ${maxOil} — عندك ${totalOil} (مسحوب سابقًا ${prevOil} + الحالي ${oilQty}). قلّل الكمية أو زوّد كارت.` });
+        }
+        const bothCaps = totalSugar >= maxSugar - 0.001 && totalOil >= maxOil - 0.001;
+        if (bothCaps && Number(tamween_discount) > tamweenGoodsTotal + 0.001) {
+          return res.status(400).json({
+            error: `السكر والزيت وصلوا لأقصى حد — لازم تكمّل قيمة الكارت ${Number(tamween_discount).toFixed(2)} ج.م ببضاعة متعلمة "بند تمويني" (ناقص ${(Number(tamween_discount) - tamweenGoodsTotal).toFixed(2)} ج.م). البضاعة الحرة ممنوعة لحد ما تكتمل.`,
+          });
+        }
+      }
+
+      // قواعد البيع بالبند التمويني — القطاعي = بضاعة حرة بس (أو بكارت تموين مربوط بزبون مسجل)
+      if (Array.isArray(invoiceItems)) {
+        const bodyPresetCards = Array.isArray((req.body as any).preset_cards) ? (req.body as any).preset_cards : [];
+        const hasCustomerIdentity = String(customer_name || "").trim() !== "" && String(secret_number || "").trim() !== "";
+        const hasTamweenCard = Number(tamween_discount) > 0 || (bodyPresetCards.length > 0 && hasCustomerIdentity);
+        for (const it of invoiceItems) {
+          const nm = String(it.name || "");
+          let row: any = it.barcode
+            ? await dbGet("SELECT is_tamween FROM items WHERE barcode = ?", [it.barcode])
+            : null;
+          if (!row && nm.trim()) {
+            row = await dbGet("SELECT is_tamween FROM items WHERE TRIM(name) = TRIM(?)", [nm]);
+          }
+          // لو الصنف مش موجود في الكتالوج بالاسم/الباركود ن fallsback لعلامة السلة نفسها — منسمحش بثغرة lookup
+          const isTamween = row ? Number(row.is_tamween) : Number(it.is_tamween || 0);
+          if (isTamween === 1 && String(sale_type) === "retail" && !hasTamweenCard) {
+            return res.status(400).json({ error: `البند التمويني "${nm}" ممنوع في البيع القطاعي بدون كارت تموين — اختار كارت التموين أو حوّل الفاتورة لجملة.` });
+          }
+        }
+      }
+
       for (const item of invoiceItems) {
         // الباركود اختياري (أصناف بلا باركود مثل الحلاوة مسموحة) — المهم الاسم والكمية
         if (!(item.name || "").trim() || isNaN(Number(item.quantity)) || Number(item.quantity) <= 0) {
           return res.status(400).json({ error: "بيانات الأصناف غير صحيحة (الاسم والكمية مطلوبان)." });
         }
+        // الكمية رقم صحيح يبدأ من 1 — مفيش كسور
+        if (!Number.isInteger(Number(item.quantity))) {
+          return res.status(400).json({ error: `الكمية لصنف "${item.name}" لازم تكون رقم صحيح يبدأ من 1 (مفيش كسور).` });
+        }
+      }
+
+      // زبون غير مسجّل: إنشاء سجله تلقائيًا مع أول صرف (كارت أو نقاط) — من غير أي تسجيل مسبق من الكاشير
+      // (بالنقاط لازم اسم + سرّي، والتأكد منهم فوق قبل الوصول لهنا)
+      // ⚠️ لازم تكون **قبل** إدراج الفاتورة (طلب 50): لو الإدراج فشل مفيش فاتورة شبح متغيرة في القاعدة
+      if (!cardCustomerId && (effTamween > 0 || effBread > 0)) {
+        const firstMonth = String(date || created_at).slice(0, 7);
+        await dbRun(
+          "INSERT INTO tamween_customers (name, secret_number, phone, card_value, bread_points, status, status_month, created_at) VALUES (?, ?, '', 0, 0, '', ?, ?)",
+          [String(customer_name).trim(), cardSecret, firstMonth, created_at]
+        );
+        const newIdRow: any = await dbGet("SELECT last_insert_rowid() as id");
+        cardCustomerId = Number(newIdRow?.id || 0) || null;
       }
 
       await dbRun(`
         INSERT INTO invoices (invoice_number, type, date, customer_supplier_name, payment_source, payment_method, sale_type, subtotal, tax, discount, tamween_discount, bread_points, bonus, total, paid, remaining, created_by, created_at, tamween_customer_id, secret_number)
         VALUES (?, 'sales', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [invoice_number, date, customer_name, payment_source, payment_method || "cash", sale_type, subtotal, tax, discount, tamween_discount || 0, bread_points || 0, bonus || 0, total, paid, remaining, created_by, created_at, tamween_customer_id ?? null, secret_number ?? ""]);
+      `, [invoice_number, date, customer_name, payment_source, payment_method || "cash", sale_type, subtotal, tax, discount, effTamween, effBread, bonus || 0, finalTotal, effPaid, effRemaining, created_by, created_at, cardCustomerId ?? tamween_customer_id ?? null, secret_number ?? ""]);
 
       const invIdRow = await dbGet("SELECT last_insert_rowid() as id");
       const invoice_id = invIdRow.id;
 
-      // خصم قيمة الكارت من الاستعاضة: تسجيل صرف العميل لشهر البيع
-      if (Number(tamween_discount) > 0) {
+      // دفتر البطاقات: الشحن (القيمة المكتوبة — كارت ونقاط — تتجمع فوق الباقي) + سطر الصرف بالتفصيل + الحالة حسب المتبقي
+      // (طلب 57 · البيع المسترجع من «مؤجّلة» اتشحن وقت التعليق فبيتخطّى الشحن)
+      if (Number(tamween_discount) > 0 || effBread > 0) {
         const saleMonth = String(date || created_at).slice(0, 7);
-        let withdrawCustomerId = tamween_customer_id ?? null;
-        if (!withdrawCustomerId && (secret_number || "").trim()) {
-          const bySecret = await dbGet("SELECT id FROM tamween_customers WHERE secret_number = ?", [String(secret_number).trim()]);
-          if (bySecret) withdrawCustomerId = bySecret.id;
-        }
-        if (withdrawCustomerId) {
-          // عميل موجود: تعليم كمصروف لشهر البيع (صف واحد فقط → بدون ازدواج)
-          await dbRun("UPDATE tamween_customers SET status = 'withdrawn', status_month = ? WHERE id = ?", [saleMonth, withdrawCustomerId]);
-        } else {
-          // كارت جديد بدون عميل مسجل: إنشاء سجل صرف بقيمة الكارت
-          await dbRun(
-            "INSERT INTO tamween_customers (name, secret_number, phone, card_value, bread_points, status, status_month, created_at) VALUES (?, ?, '', ?, ?, 'withdrawn', ?, ?)",
-            [String(customer_name).trim(), String(secret_number).trim(), Number(tamween_discount), Number(bread_points) || 0, saleMonth, created_at]
+        const addLedgerRow = async (type: string, amount: number, note: string) =>
+          dbRun(
+            `INSERT INTO tamween_card_ledger (customer_id, secret_number, month, type, amount, note, invoice_id, invoice_number, created_by, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [cardCustomerId, cardSecret, saleMonth, type, amount, note, invoice_id, invoice_number, created_by || "", created_at]
           );
+
+        let cardCharged = 0, breadCharged = 0;
+        if (!skipCharge && cardCustomerId) {
+          if (cardRawV > 0) {
+            cardCharged = cardRawV;
+            await addLedgerRow("شحن", cardCharged, "شحن كارت مع الصرف");
+            await dbRun("UPDATE tamween_customers SET card_value = COALESCE(card_value,0) + ? WHERE id = ?", [cardCharged, cardCustomerId]);
+          }
+          if (breadRawV > 0) {
+            breadCharged = breadRawV;
+            await addLedgerRow("شحن نقاط", breadCharged, "شحن نقاط مع الصرف");
+            await dbRun("UPDATE tamween_customers SET bread_points = COALESCE(bread_points,0) + ? WHERE id = ?", [breadCharged, cardCustomerId]);
+          }
+        }
+        // نقاط الخبز: خصم فعلي من رصيد الزبون (بعد الشحن)
+        if (effBread > 0 && cardCustomerId) {
+          await dbRun(
+            "UPDATE tamween_customers SET bread_points = MAX(0, COALESCE(bread_points, 0) - ?) WHERE id = ?",
+            [effBread, cardCustomerId]
+          );
+        }
+
+        // الحالة = مكتمل لو المتبقي صفر، وإلا «فاضل» (صرف لاحق)
+        const afterState = await getCardState(cardCustomerId, cardSecret);
+        const afterBreadRow: any = cardCustomerId ? await dbGet("SELECT COALESCE(bread_points,0) AS b FROM tamween_customers WHERE id = ?", [cardCustomerId]) : null;
+        const remCard = Number(afterState.remaining || 0);
+        const remBread = Number(afterBreadRow?.b || 0);
+        const newStatus = remCard > 0.001 ? "later" : "withdrawn";
+        // سطر الصرف المربوط بالفاتورة — بالتفصيل (طلب 57: كارت كذا · نقاط كذا · مجموع كذا · مأخوذ كذا · الباقي كذا)
+        const fundsSum = Number((cardCharged + breadCharged).toFixed(2));
+        const takenSum = Number((Number(effTamween || 0) + Number(effBread || 0)).toFixed(2));
+        const remSum = Number((remCard + remBread).toFixed(2));
+        const withdrawNote = `كارت ${Number(cardCharged).toFixed(2)} + نقاط ${Number(breadCharged).toFixed(2)} = ${fundsSum.toFixed(2)} · مأخوذ ${takenSum.toFixed(2)} (كارت ${Number(effTamween || 0).toFixed(2)} + نقاط ${Number(effBread || 0).toFixed(2)}) · الباقي كارت ${remCard.toFixed(2)} + نقاط ${remBread.toFixed(2)} = ${remSum.toFixed(2)}`;
+        await addLedgerRow("صرف", effTamween, withdrawNote);
+        // نفس التفصيل يتسجّل على الفاتورة (للسجل والطباعة — طلب 57)
+        try { await dbRun("UPDATE invoices SET details = ? WHERE id = ?", [withdrawNote, invoice_id]); } catch {}
+        await dbRun("UPDATE tamween_customers SET status = ?, status_month = ? WHERE id = ?", [newStatus, saleMonth, cardCustomerId]);
+        if (newStatus === "withdrawn" && cardCustomerId) {
+          await dbRun("UPDATE tamween_customers SET pending_sale_json = '' WHERE id = ?", [cardCustomerId]);
         }
       }
 
@@ -1747,11 +2341,13 @@ async function startServer() {
         }
       }
 
-      const tamweenMsg = tamween_discount > 0 ? ` | خصم تموين: ${tamween_discount} (مخصوم من الاستعاضة)` : '';
+      const tamweenMsg = effTamween > 0 || effBread > 0
+        ? ` | خصم تموين: ${effTamween}${effBread > 0 ? ` + نقاط خبز: ${effBread}` : ""} (مخصوم من الاستعاضة)`
+        : "";
       await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, 'فاتورة مبيعات', ?)", [
         new Date().toISOString(),
         created_by || "الكاشير",
-        `تم بيع فاتورة مبيعات رقم ${invoice_number} بقيمة ${total} للعميل ${customer_name}${tamweenMsg}`
+        `تم بيع فاتورة مبيعات رقم ${invoice_number} بقيمة ${finalTotal} للعميل ${customer_name}${tamweenMsg}`
       ]);
 
       res.json({ success: true, invoice_id });
@@ -1962,6 +2558,13 @@ async function startServer() {
       if (opts.invoices) {
         await dbRun("DELETE FROM invoice_items");
         await dbRun("DELETE FROM invoices");
+        // جداول مرتبطة بالفواتير — لازم تتمسح معاها عشان مفيش صفوف يتيمة
+        // (drawer_refunds اليتيمة كانت السبب في فرق التقفيل السالب)
+        for (const linked of ["drawer_refunds", "held_invoices", "active_carts", "bread_settlements"]) {
+          try { await dbRun(`DELETE FROM ${linked}`); } catch (e) {}
+        }
+        // سطور الصرف في دفتر البطاقات (الشحنات بتفضل — دي أرصدة حقيقية)
+        try { await dbRun("DELETE FROM tamween_card_ledger WHERE type = 'صرف'"); } catch (e) {}
       }
       
       if (opts.items) {
@@ -2008,7 +2611,7 @@ async function startServer() {
         { key: "receipt_footer", value: "شكراً لزيارتكم! يسعدنا تقديم أفضل الخدمات لكم دائماً." }
       ];
       for (const d of defaultSettings) {
-        await dbRun("INSERT INTO settings (key, value) VALUES (?, ?)", [d.key, d.value]);
+        await dbRun("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", [d.key, d.value]);
       }
 
       // Re-seed Default Admin and Developer Users
@@ -2018,7 +2621,7 @@ async function startServer() {
       ]);
 
       await dbRun(
-        "INSERT INTO users (username, password, name, role, permissions) VALUES (?, ?, ?, ?, ?)",
+        "INSERT OR IGNORE INTO users (username, password, name, role, permissions) VALUES (?, ?, ?, ?, ?)",
         ["admin", await bcrypt.hash("561128", 10), "أحمد المدير العام", "admin", adminPermissions]
       );
 
@@ -2252,7 +2855,7 @@ async function startServer() {
   });
 
   // API - Update/Edit Invoice (تعديل فاتورة)
-  app.put("/api/invoices/:id", async (req, res) => {
+  app.put("/api/invoices/:id", requirePermission("edit_invoice"), async (req, res) => {
     try {
       const { id } = req.params;
       const { customer_supplier_name, payment_source, paid, remaining, user_name } = req.body;
@@ -2260,10 +2863,62 @@ async function startServer() {
       const invoice = await dbGet("SELECT * FROM invoices WHERE id = ?", [id]);
       if (!invoice) return res.status(404).json({ error: "الفاتورة غير موجودة" });
 
+      // لو اسم المورد اتغيّر نعيد ربط الفاتورة بـ id بتاعه (عشان حساب المورّد ما يتقطّعش)
+      let supplier_id: number | null = invoice.supplier_id ?? null;
+      if (invoice.type === "purchases") {
+        const sup = customer_supplier_name
+          ? await dbGet("SELECT id FROM suppliers WHERE TRIM(name) = TRIM(?)", [customer_supplier_name])
+          : null;
+        supplier_id = sup ? sup.id : null;
+      }
+
+      // أي تغيّر في "المدفوع" لازم يسيب حركة خزنة — عشان الرصيد ما يتغيّرش في الظلام
+      const oldPaid = Number(invoice.paid || 0);
+      const newPaidVal = Number(paid || 0);
+      const delta = +(newPaidVal - oldPaid).toFixed(2);
+      const out = invoice.type === "purchases" ? delta > 0 : delta < 0;
+      const amt = Math.abs(delta);
+      const src = payment_source === "cash_register" ? "cash_register" : "main_safe";
+
+      // نتأكد من الرصيد قبل ما نحدّث الفاتورة (الحساب لسه على القيم القديمة)
+      if (Math.abs(delta) > 0.001 && out) {
+        const bal = await computeBalances();
+        const available = src === "cash_register" ? bal.cash_register : bal.main_safe;
+        if (amt > available + 0.001) {
+          return res.status(400).json({
+            error: `الرصيد غير كافٍ في ${src === "cash_register" ? "الدرج" : "الخزنة"} — المتاح ${available.toFixed(2)} ج.م والمطلوب ${amt.toFixed(2)} ج.م.`,
+          });
+        }
+      }
+
       await dbRun(
-        `UPDATE invoices SET customer_supplier_name = ?, payment_source = ?, paid = ?, remaining = ? WHERE id = ?`,
-        [customer_supplier_name, payment_source, Number(paid), Number(remaining), id]
+        `UPDATE invoices SET customer_supplier_name = ?, supplier_id = ?, payment_source = ?, paid = ?, remaining = ? WHERE id = ?`,
+        [customer_supplier_name, supplier_id, payment_source, Number(paid), Number(remaining), id]
       );
+
+      if (Math.abs(delta) > 0.001) {
+        // مبيعات: زيادة مدفوع = فلوس داخلة (deposit) · مشتريات: زيادة مدفوع = فلوس خارجة (withdraw)
+        const kindLabel = invoice.type === "sales" ? "مبيعات" : "مشتريات";
+        await dbRun(
+          "INSERT INTO treasury_transactions (type, amount, source, destination, date, notes, created_by, invoice_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          [
+            out ? "withdraw" : "deposit",
+            amt,
+            src,
+            src,
+            new Date().toISOString(),
+            `تعديل مدفوع فاتورة ${invoice.invoice_number} ${kindLabel} (${delta > 0 ? "+" : "-"}${amt.toFixed(2)})`,
+            user_name || "المدير",
+            Number(id),
+          ]
+        );
+        await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, ?, ?)", [
+          new Date().toISOString(),
+          user_name || "المدير",
+          "تعديل مدفوع + حركة خزنة",
+          `فاتورة ${invoice.invoice_number} (${kindLabel}): المدفوع ${oldPaid.toFixed(2)} → ${newPaidVal.toFixed(2)} — حركة خزنة ${out ? "سحب" : "إيداع"} ${amt.toFixed(2)} من ${src === "cash_register" ? "الدرج" : "الخزينة"}`,
+        ]);
+      }
 
       // Log the modification under high-security trace
       await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, 'تعديل فاتورة أمني', ?)", [
@@ -2279,7 +2934,7 @@ async function startServer() {
   });
 
   // API - Delete Invoice (حذف فاتورة مع استرجاع المخزن)
-  app.delete("/api/invoices/:id", async (req, res) => {
+  app.delete("/api/invoices/:id", requirePermission("delete_invoice"), async (req, res) => {
     try {
       const { id } = req.params;
       const { user_name, user_role } = req.query; // to track who requested the delete
@@ -2318,7 +2973,7 @@ async function startServer() {
   });
 
   // API - Return/Refund Invoice (فاتورة مرتجع مالي وأمني عالي)
-  app.post("/api/invoices/:id/return", async (req, res) => {
+  app.post("/api/invoices/:id/return", requirePermission("return_invoice"), async (req, res) => {
     try {
       const { id } = req.params;
       const { user_name, user_role, refund_items } = req.body; // refund_items contains fine-grained or full returns
@@ -2411,12 +3066,41 @@ async function startServer() {
           `${securityAuditTag} تم إجراء مرتجع جزئي على الفاتورة رقم ${invoice.invoice_number} (نوع: ${invoice.type === "sales" ? "مبيعات" : "مشتريات"}) بقيمة مستردة ${(total_refund || 0).toFixed(2)} ج.م (تخفيض من الدرج/الخزنة). الأصناف المرتجعة للمخزن: [ ${detailsArray.join("، ")} ]. المستخدم المنفذ: ${user_name} (${user_role})`
         ]);
 
+        // حركة مرتجع نقدي — لحساب متوقع الصندوق في شاشة التقفيل
+        const paidReductionPartial = Math.max(0, Number(invoice.paid || 0) - Number(new_paid || 0));
+        await dbRun(
+          `INSERT INTO drawer_refunds (invoice_id, invoice_number, invoice_type, invoice_date, refund_amount, paid_reduction, payment_source, payment_method, refund_date, refund_at, created_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            Number(id), invoice.invoice_number, invoice.type, invoice.date,
+            Number(total_refund || 0), paidReductionPartial,
+            invoice.payment_source || "cash_register", invoice.payment_method || "cash",
+            localDateStr(), new Date().toISOString(),
+            user_name || "الكاشير"
+          ]
+        );
+
         return res.json({ success: true, message: `تم تسجيل مرتجع البضاعة الجزئي، وتعديل كميات الأصناف والموازنات الحسابية بنجاح.` });
       }
 
       // FULL FALLBACK RETURN LOGIC
       // Set status as 'returned'
-      await dbRun("UPDATE invoices SET status = 'returned' WHERE id = ?", [id]);
+      const returnedAtIso = new Date().toISOString();
+      await dbRun("UPDATE invoices SET status = 'returned', returned_at = ? WHERE id = ?", [returnedAtIso, id]);
+
+      // حركة مرتجع نقدي كامل — عشان شاشة التقفيل تخصم خروج الفلوس من الدرج يوم المرتجع
+      // الملاحظة: المرتجع الكامل مش بيعدّل عمود paid — فالفلوس اللي خرجت فعليًا = اللي اتدفعت (paid)
+      await dbRun(
+        `INSERT INTO drawer_refunds (invoice_id, invoice_number, invoice_type, invoice_date, refund_amount, paid_reduction, payment_source, payment_method, refund_date, refund_at, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          Number(id), invoice.invoice_number, invoice.type, invoice.date,
+          Number(invoice.paid || 0), 0,
+          invoice.payment_source || "cash_register", invoice.payment_method || "cash",
+          returnedAtIso.slice(0, 10), returnedAtIso,
+          user_name || "الكاشير"
+        ]
+      );
 
       // Revert stock of items returned
       for (const item of items) {
@@ -2584,7 +3268,8 @@ async function startServer() {
                it.wholesale_price,
                it.quantity as quantity,
                it.is_unlimited,
-               it.low_stock_limit
+               it.low_stock_limit,
+               it.is_tamween
         FROM invoice_items ii
         JOIN invoices i ON ii.invoice_id = i.id
         JOIN items it ON it.barcode = ii.barcode
@@ -2605,22 +3290,31 @@ async function startServer() {
       const reqMonth = typeof (req.query as any)?.month === "string" ? (req.query as any).month : "";
       const currentMonth = /^\d{4}-\d{2}$/.test(reqMonth) ? reqMonth : new Date().toISOString().slice(0, 7);
 
-      // Total Sales Summary
-      const salesSum = await dbGet("SELECT SUM(total) as total, COUNT(*) as count FROM invoices WHERE type = 'sales' AND (status != 'returned' OR status IS NULL)");
+      // Total Sales Summary — قيمة البيع فعليًا (السلة + ضريبة − خصم + رسوم/حافز) وتحتها المقبوض نقدًا
+      const salesSum = await dbGet(`
+        SELECT SUM(total) as paid_total,
+               SUM(subtotal + tax - discount + bonus) as total,
+               SUM(paid) as cash,
+               COUNT(*) as count
+        FROM invoices WHERE type = 'sales' AND (status != 'returned' OR status IS NULL)`);
       // Total Purchases Summary
       const purchasesSum = await dbGet("SELECT SUM(total) as total, COUNT(*) as count FROM invoices WHERE type = 'purchases'");
 
       // Low Stock Count
       const lowStockCount = await dbGet("SELECT COUNT(*) as count FROM items WHERE quantity <= low_stock_limit");
 
-      // Calculate Net Profits: Sum of (sale_price - cost_price) * qty
-      // invoice_items of 'sales' type invoices
+      // صافي الربح = هامش البضاعة (بيع − تكلفة) + رسوم/حافز الخدمة
+      // ملاحظة: الدعم ونقاط الخبز مش خصومات من الربح — رجّعت بضاعة (استعاضة) أو مستحقات
       const profitSum = await dbGet(`
-        SELECT SUM((ii.price - ii.cost_price) * ii.quantity) as profit
+        SELECT SUM((ii.price - ii.cost_price) * ii.quantity) as margin
         FROM invoice_items ii
         JOIN invoices i ON ii.invoice_id = i.id
         WHERE i.type = 'sales' AND (i.status != 'returned' OR i.status IS NULL)
       `);
+      const bonusSum = await dbGet(
+        "SELECT SUM(bonus) as bonus FROM invoices WHERE type = 'sales' AND (status != 'returned' OR status IS NULL)"
+      );
+      const netProfit = Number(profitSum.margin || 0) + Number(bonusSum.bonus || 0);
 
       // Top Selling Products
       const topSelling = await dbAll(`
@@ -2680,13 +3374,15 @@ async function startServer() {
       res.json({
         sales: {
           total: salesSum.total || 0,
+          paid: salesSum.paid_total || 0,
+          cash: salesSum.cash || 0,
           count: salesSum.count || 0,
         },
         purchases: {
           total: purchasesSum.total || 0,
           count: purchasesSum.count || 0,
         },
-        profit: profitSum.profit || 0,
+        profit: netProfit,
         lowStockCount: lowStockCount.count || 0,
         topSelling,
         recentInvoices,
@@ -2707,6 +3403,184 @@ async function startServer() {
           netOwed: tamweenSummary.remaining
         }
       });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ============ التقفيله الشهريه — إغلاق شهري للداشبورد ============
+  const monthRange = (mStr: string) => {
+    const [yy, mm] = mStr.split("-").map(Number);
+    const lastD = new Date(yy, mm, 0).getDate();
+    return { start: `${mStr}-01`, end: `${mStr}-${String(lastD).padStart(2, "0")}` };
+  };
+
+  const buildMonthlyClose = async (mStr: string) => {
+    const { start, end } = monthRange(mStr);
+    const eTs = `${end}T23:59:59.999`;
+
+    // 1) صافي التموينية — رصيد التموين المترحّل للمشهر
+    const tw = await getTamweenMonthSummary(mStr);
+    const tamweenNet = Number(tw.remaining || 0);
+
+    // 2) البضاعة الحر — مبيعات الشهر من غير كارت تموين
+    const freeRow: any = await dbGet(
+      `SELECT COALESCE(SUM(total),0) AS v FROM invoices
+       WHERE type = 'sales' AND (status IS NULL OR status != 'returned')
+         AND COALESCE(tamween_discount,0) = 0 AND date >= ? AND date <= ?`,
+      [start, end]
+    );
+    const freeGoods = Number(freeRow?.v || 0);
+
+    // 3) التسويات — مرتجعات الشهر (سالب على الحساب)
+    const retRow: any = await dbGet(
+      `SELECT COALESCE(SUM(total),0) AS v FROM invoices
+       WHERE type = 'sales' AND status = 'returned' AND date >= ? AND date <= ?`,
+      [start, end]
+    );
+    const adjustments = -Number(retRow?.v || 0);
+
+    // 4) إجمالي فلوس لنا — فواتير آجل مبيعات + دفتر الزبائن حتى نهاية الشهر
+    const custInv: any = await dbGet(
+      `SELECT COALESCE(SUM(remaining),0) AS v FROM invoices
+       WHERE type = 'sales' AND COALESCE(remaining,0) > 0 AND date <= ?`,
+      [end]
+    );
+    const custLedger: any = await dbGet(
+      `SELECT COALESCE(SUM(CASE WHEN type IN ('opening_debit', 'refund') THEN amount ELSE -amount END),0) AS v
+       FROM customer_ledger WHERE created_at <= ?`,
+      [eTs]
+    );
+    const moneyOwedUs = Math.max(0, Number(custInv?.v || 0) + Number(custLedger?.v || 0));
+
+    // 5) إجمالي فلوس عليك — فواتير مشتريات آجل + دفتر الموردين حتى نهاية الشهر (بدون المقدّمات)
+    const supInv: any = await dbGet(
+      `SELECT COALESCE(SUM(remaining),0) AS v FROM invoices
+       WHERE type = 'purchases' AND COALESCE(remaining,0) > 0 AND (status IS NULL OR status != 'returned') AND date <= ?`,
+      [end]
+    );
+    const supLedger: any = await dbGet(
+      `SELECT COALESCE(SUM(CASE WHEN type = 'opening_debit' THEN amount ELSE -amount END),0) AS v
+       FROM supplier_ledger WHERE created_at <= ?`,
+      [eTs]
+    );
+    const moneyOwedThem = Math.max(0, Number(supInv?.v || 0) + Number(supLedger?.v || 0));
+
+    // 6) نقاط الخبز — المتوقّع ولم يُحصّل حتى نهاية الشهر
+    const breadAcc: any = await dbGet(
+      `SELECT COALESCE(SUM(bread_points),0) AS v FROM invoices
+       WHERE type = 'sales' AND (status IS NULL OR status != 'returned') AND date <= ?`,
+      [end]
+    );
+    const breadSet: any = await dbGet(
+      `SELECT COALESCE(SUM(expected),0) AS v FROM bread_settlements
+       WHERE substr(COALESCE(date, created_at), 1, 10) <= ?`,
+      [end]
+    );
+    const breadPts = Number(breadAcc?.v || 0) - Number(breadSet?.v || 0);
+
+    // 7) نقدى بالدرج — مبيعات نقدية − مشتريات − مصروفات + حركات الخزنة خلال الشهر
+    const drawerSales: any = await dbGet(
+      `SELECT COALESCE(SUM(paid),0) AS v FROM invoices
+       WHERE type = 'sales' AND (status IS NULL OR status != 'returned')
+         AND payment_source = 'cash_register'
+         AND (payment_method IS NULL OR payment_method NOT IN ('visa','instapay','vodafone'))
+         AND date >= ? AND date <= ?`,
+      [start, end]
+    );
+    const drawerPurch: any = await dbGet(
+      `SELECT COALESCE(SUM(paid),0) AS v FROM invoices
+       WHERE type = 'purchases' AND payment_source = 'cash_register' AND date >= ? AND date <= ?`,
+      [start, end]
+    );
+    const drawerExp: any = await dbGet(
+      `SELECT COALESCE(SUM(amount),0) AS v FROM expenses
+       WHERE COALESCE(payment_source,'cash_register') = 'cash_register' AND date >= ? AND date <= ?`,
+      [start, end]
+    );
+    const drawerTx: any = await dbGet(
+      `SELECT
+         COALESCE(SUM(CASE WHEN type = 'deposit' AND destination = 'cash_register' THEN amount
+                           WHEN type = 'withdraw' AND source = 'cash_register' THEN -amount
+                           WHEN type = 'transfer' AND source = 'cash_register' THEN -amount
+                           WHEN type = 'transfer' AND destination = 'cash_register' THEN amount
+                           ELSE 0 END),0) AS v
+       FROM treasury_transactions WHERE substr(date, 1, 10) >= ? AND substr(date, 1, 10) <= ?`,
+      [start, end]
+    );
+    const cashInDrawer =
+      Number(drawerSales?.v || 0) - Number(drawerPurch?.v || 0) - Number(drawerExp?.v || 0) + Number(drawerTx?.v || 0);
+
+    // 8) فيزا كارد — مدفوعات كارت الشهر (فيزا/إنستا باي/فودافون كاش)
+    const visaRow: any = await dbGet(
+      `SELECT COALESCE(SUM(paid),0) AS v FROM invoices
+       WHERE type = 'sales' AND (status IS NULL OR status != 'returned')
+         AND payment_method IN ('visa','instapay','vodafone') AND date >= ? AND date <= ?`,
+      [start, end]
+    );
+    const visaCard = Number(visaRow?.v || 0);
+
+    const boxes: { key: string; label: string; value: number; tone: string }[] = [
+      { key: "tamween_net", label: "صافي التموينية", value: +tamweenNet.toFixed(2), tone: "accent" },
+      { key: "free_goods", label: "البضاعة الحر", value: +freeGoods.toFixed(2), tone: "success" },
+      { key: "adjustments", label: "التسويات", value: +adjustments.toFixed(2), tone: "danger" },
+      { key: "owed_us", label: "إجمالي فلوس لنا", value: +moneyOwedUs.toFixed(2), tone: "danger" },
+      { key: "owed_them", label: "إجمالي فلوس عليك", value: +moneyOwedThem.toFixed(2), tone: "warning" },
+      { key: "bread_points", label: "نقاط الخبز", value: +breadPts.toFixed(2), tone: "info" },
+      { key: "cash_drawer", label: "نقدى بالدرج", value: +cashInDrawer.toFixed(2), tone: "success" },
+      { key: "visa_card", label: "فيزا كارد", value: +visaCard.toFixed(2), tone: "info" },
+    ];
+    const total = +boxes.reduce((s, b) => s + b.value, 0).toFixed(2);
+    return { month: mStr, boxes, total };
+  };
+
+  app.get("/api/monthly-close", async (req, res) => {
+    try {
+      const reqMonth = typeof (req.query as any)?.month === "string" ? (req.query as any).month : "";
+      const month = /^\d{4}-\d{2}$/.test(reqMonth) ? reqMonth : new Date().toISOString().slice(0, 7);
+      const prev = prevMonthStr(month);
+      const cur = await buildMonthlyClose(month);
+      const prv = await buildMonthlyClose(prev);
+      const delta = +(cur.total - prv.total).toFixed(2);
+      let carry = 0;
+      try {
+        const row: any = await dbGet("SELECT value FROM settings WHERE key = ?", [`carry_forward_${month}`]);
+        carry = Number(String(row?.value || "0")) || 0;
+      } catch {}
+      res.json({
+        month,
+        prev_month: prev,
+        boxes: cur.boxes,
+        total: cur.total,
+        prev_total: prv.total,
+        prev_boxes: prv.boxes,
+        delta,
+        carry_forward: carry,
+        net_profit: +(carry + delta).toFixed(2),
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // حفظ «المسبوقات» (رصيد مُرحَّل يدوي) لشهر معيّن
+  app.post("/api/monthly-close", async (req, res) => {
+    try {
+      const { month, carry_forward, user_name } = req.body;
+      const m = /^\d{4}-\d{2}$/.test(String(month || "")) ? String(month) : new Date().toISOString().slice(0, 7);
+      const key = `carry_forward_${m}`;
+      const val = String(Number(carry_forward) || 0);
+      await dbRun(
+        "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?",
+        [key, val, val]
+      );
+      await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, ?, ?)", [
+        new Date().toISOString(),
+        user_name || "النظام",
+        "التقفيله الشهريه",
+        `تعديل المسبوقات لشهر ${m}: ${val} جنيه`,
+      ]);
+      res.json({ success: true, month: m, carry_forward: Number(val) });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -2843,8 +3717,23 @@ async function startServer() {
          GROUP BY ii.barcode, ii.name, ii.unit ORDER BY total DESC`,
         [startDate, endDate]
       );
-      // بضاعة تموينية (عليها بند تمويني) مباعة بأي طريقة دفع — الكارت مش شرط
+      // بضاعة تموينية مباعة في التموين: صنف تمويني (is_tamween=1) + الفاتورة فيها كارت
       const tamweenAllItems = await dbAll(
+        `SELECT ii.barcode, ii.name, ii.unit, SUM(ii.quantity) as qty,
+                CASE WHEN SUM(ii.quantity) > 0 THEN SUM(ii.total) / SUM(ii.quantity) ELSE 0 END as price,
+                SUM(ii.total) as total,
+                SUM((ii.price - ii.cost_price) * ii.quantity) as profit
+         FROM invoice_items ii
+         JOIN invoices i ON ii.invoice_id = i.id
+        JOIN items it ON it.barcode = ii.barcode AND it.is_tamween = 1
+        WHERE i.type = 'sales' AND (i.status != 'returned' OR i.status IS NULL)
+         AND i.tamween_discount > 0
+         AND i.date >= ? AND i.date <= ?
+        GROUP BY ii.barcode, ii.name, ii.unit ORDER BY total DESC`,
+        [startDate, endDate]
+      );
+      // ربح الأصناف التموينية المباعة ببطاقة تموين (فاتورة فيها خصم تمويني)
+      const tamweenCardItems = await dbAll(
         `SELECT ii.barcode, ii.name, ii.unit, SUM(ii.quantity) as qty,
                 CASE WHEN SUM(ii.quantity) > 0 THEN SUM(ii.total) / SUM(ii.quantity) ELSE 0 END as price,
                 SUM(ii.total) as total,
@@ -2853,7 +3742,23 @@ async function startServer() {
          JOIN invoices i ON ii.invoice_id = i.id
          JOIN items it ON it.barcode = ii.barcode AND it.is_tamween = 1
          WHERE i.type = 'sales' AND (i.status != 'returned' OR i.status IS NULL)
-         AND i.date >= ? AND i.date <= ?
+          AND i.tamween_discount > 0
+          AND i.date >= ? AND i.date <= ?
+         GROUP BY ii.barcode, ii.name, ii.unit ORDER BY total DESC`,
+        [startDate, endDate]
+      );
+      // ربح الأصناف التموينية المباعة بدون بطاقة (كاش/آجل — بدون خصم تمويني)
+      const tamweenNoCardItems = await dbAll(
+        `SELECT ii.barcode, ii.name, ii.unit, SUM(ii.quantity) as qty,
+                CASE WHEN SUM(ii.quantity) > 0 THEN SUM(ii.total) / SUM(ii.quantity) ELSE 0 END as price,
+                SUM(ii.total) as total,
+                SUM((ii.price - ii.cost_price) * ii.quantity) as profit
+         FROM invoice_items ii
+         JOIN invoices i ON ii.invoice_id = i.id
+         JOIN items it ON it.barcode = ii.barcode AND it.is_tamween = 1
+         WHERE i.type = 'sales' AND (i.status != 'returned' OR i.status IS NULL)
+          AND COALESCE(i.tamween_discount, 0) = 0
+          AND i.date >= ? AND i.date <= ?
          GROUP BY ii.barcode, ii.name, ii.unit ORDER BY total DESC`,
         [startDate, endDate]
       );
@@ -2874,7 +3779,7 @@ async function startServer() {
          ORDER BY name`,
         [startMonth, endMonth]
       );
-      res.json({ salesItems, freeSalesItems, tamweenAllItems, purchaseItems, customers });
+      res.json({ salesItems, freeSalesItems, tamweenAllItems, tamweenCardItems, tamweenNoCardItems, purchaseItems, customers });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -3064,9 +3969,22 @@ async function startServer() {
   app.post("/api/expenses", async (req, res) => {
     try {
       const { title, amount, date, category, notes, payment_source, logCreator } = req.body;
+      const amountNum = Number(amount);
+      if (!isFinite(amountNum) || amountNum <= 0) return res.status(400).json({ error: "المبلغ غير صحيح." });
+      const src = payment_source || "cash_register";
+      // مصروفات بتخرج فلوس — لازم الرصيد يسمح
+      if (src === "cash_register" || src === "main_safe") {
+        const bal = await computeBalances();
+        const available = src === "cash_register" ? bal.cash_register : bal.main_safe;
+        if (amountNum > available + 0.001) {
+          return res.status(400).json({
+            error: `الرصيد غير كافٍ في ${src === "cash_register" ? "الدرج" : "الخزنة"} — المتاح ${available.toFixed(2)} ج.م والمطلوب ${amountNum.toFixed(2)} ج.م.`,
+          });
+        }
+      }
       const result = await dbRun(
-        "INSERT INTO expenses (title, amount, date, category, notes) VALUES (?, ?, ?, ?, ?)",
-        [title, Number(amount), date, category, notes, payment_source || "cash_register"]
+        "INSERT INTO expenses (title, amount, date, category, notes, payment_source) VALUES (?, ?, ?, ?, ?, ?)",
+        [title, amountNum, date, category, notes, src]
       );
       await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, 'بند مصروفات', ?)", [
         new Date().toISOString(),
@@ -3085,9 +4003,24 @@ async function startServer() {
       const { title, amount, date, category, notes, payment_source, logCreator } = req.body;
       // placeholder
       const original = await dbGet("SELECT * FROM expenses WHERE id = ?", [id]);
+      if (!original) return res.status(404).json({ error: "القيد غير موجود." });
+      const newAmount = Number(amount);
+      if (!isFinite(newAmount) || newAmount <= 0) return res.status(400).json({ error: "المبلغ غير صحيح." });
+      const newSrc = payment_source || "cash_register";
+      // زيادة المبلغ هي بس اللي بتستهلك رصيد — نتأكد منها قبل التحديث
+      const increase = +(newAmount - Number(original.amount || 0)).toFixed(2);
+      if (increase > 0.001 && (newSrc === "cash_register" || newSrc === "main_safe")) {
+        const bal = await computeBalances();
+        const available = newSrc === "cash_register" ? bal.cash_register : bal.main_safe;
+        if (increase > available + 0.001) {
+          return res.status(400).json({
+            error: `الرصيد غير كافٍ في ${newSrc === "cash_register" ? "الدرج" : "الخزنة"} — المتاح ${available.toFixed(2)} ج.م والمطلوب زيادة ${increase.toFixed(2)} ج.م.`,
+          });
+        }
+      }
       await dbRun(
         "UPDATE expenses SET title = ?, amount = ?, date = ?, category = ?, notes = ?, payment_source = ? WHERE id = ?",
-        [title, Number(amount), date, category, notes, payment_source || "cash_register", id]
+        [title, newAmount, date, category, notes, newSrc, id]
       );
       if (original) {
         await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, 'تعديل مصروفات', ?)", [
@@ -3115,6 +4048,75 @@ async function startServer() {
           `تم حذف بند مصروفات "${original.title}" بقيمة ${original.amount} ج.م`
         ]);
       }
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // تصنيفات المصروفات — محفوظة في settings عشان تفضل موجودة بعد إعادة التشغيل
+  const EXPENSE_CATEGORIES_KEY = "expense_categories";
+
+  app.get("/api/expense-categories", async (req, res) => {
+    try {
+      const row = await dbGet("SELECT value FROM settings WHERE key = ?", [EXPENSE_CATEGORIES_KEY]);
+      let categories: { value: string; label: string }[] = [];
+      if (row && row.value) {
+        try {
+          const parsed = JSON.parse(row.value);
+          if (Array.isArray(parsed)) {
+            categories = parsed
+              .map((c: any) =>
+                typeof c === "string"
+                  ? { value: String(c).trim(), label: String(c).trim() }
+                  : { value: String(c?.value || "").trim(), label: String(c?.label || c?.value || "").trim() }
+              )
+              .filter((c: any) => c.value);
+          }
+        } catch {
+          categories = [];
+        }
+      }
+      res.json({ categories });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // حفظ القائمة + (اختياريًا) إعادة تسمية تصنيف → بيحدّث القوائم المحفوظة في المصروفات نفسها
+  app.post("/api/expense-categories", async (req, res) => {
+    try {
+      const { categories, rename, user_name } = req.body || {};
+
+      if (Array.isArray(categories)) {
+        const normalized = categories
+          .map((c: any) =>
+            typeof c === "string"
+              ? { value: String(c).trim(), label: String(c).trim() }
+              : { value: String(c?.value || "").trim(), label: String(c?.label || c?.value || "").trim() }
+          )
+          .filter((c: any) => c.value);
+        const json = JSON.stringify(normalized);
+        await dbRun(
+          "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?",
+          [EXPENSE_CATEGORIES_KEY, json, json]
+        );
+      }
+
+      if (rename && typeof rename === "object") {
+        const from = String(rename.from || "").trim();
+        const to = String(rename.to || "").trim();
+        if (!from || !to) return res.status(400).json({ error: "اسم التصنيف غير صحيح." });
+        if (from !== to) {
+          const updated = await dbRun("UPDATE expenses SET category = ? WHERE category = ?", [to, from]);
+          await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, 'تصنيفات المصروفات', ?)", [
+            new Date().toISOString(),
+            user_name || "المدير العام",
+            `تغيير اسم تصنيف المصروفات "${from}" إلى "${to}" — تم تحديث ${updated.changes || 0} قيد.`,
+          ]);
+        }
+      }
+
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -3346,7 +4348,9 @@ async function startServer() {
   });
 
   // Restore snapshot (upload zip) - safety snapshot first, then replace, then restart
-  app.post("/api/system/restore-snapshot", upload.single("snapshot"), async (req, res) => {
+  // ⛔ استعادة شاملة بتستبدل كود البرنامج وقاعدة البيانات وتقفل السيرفر —
+  //    صلاحيات Admin/Developer فقط (أي مستخدم مسجّل دخول كان يقدر يعملها قبل كده)
+  app.post("/api/system/restore-snapshot", requireAuth, requireAdmin, upload.single("snapshot"), async (req, res) => {
     if (!req.file) {
       return res.status(400).json({ error: "لم يتم رفع أي ملف" });
     }
@@ -3477,7 +4481,305 @@ async function startServer() {
     try {
       await rolloverTamweenMonth();
       const customers = await dbAll("SELECT * FROM tamween_customers ORDER BY id DESC");
+      // دفتر البطاقات: المسجّل • المصروف • المتبقي + آخر عملية صرف (نوع البضاعة)
+      try {
+        const idList = customers.map((c: any) => Number(c.id)).filter((n: number) => n > 0);
+        const secrets = Array.from(new Set(customers.map((c: any) => String(c.secret_number || "").trim()).filter(Boolean)));
+        const tops: any[] = idList.length
+          ? await dbAll(
+              `SELECT customer_id, secret_number, SUM(amount) AS topped FROM tamween_card_ledger
+               WHERE type = 'شحن' AND (customer_id IN (${idList.map(() => "?").join(",")})${secrets.length ? ` OR (customer_id IS NULL AND secret_number IN (${secrets.map(() => "?").join(",")}))` : ""})
+               GROUP BY customer_id, secret_number`,
+              [...idList, ...secrets]
+            )
+          : [];
+        const invRows: any[] = idList.length
+          ? await dbAll(
+              `SELECT id, invoice_number, date, tamween_discount, tamween_customer_id, secret_number FROM invoices
+               WHERE type = 'sales' AND (status IS NULL OR status != 'returned') AND COALESCE(tamween_discount,0) > 0
+                  AND (tamween_customer_id IN (${idList.map(() => "?").join(",")})${secrets.length ? ` OR (tamween_customer_id IS NULL AND secret_number IN (${secrets.map(() => "?").join(",")}))` : ""})
+               ORDER BY date DESC, id DESC LIMIT 500`,
+              [...idList, ...secrets]
+            )
+          : [];
+        // نقاط الخبز المنصافة فعليًا (من الفواتير) — `bread_points` على الزبون رصيد بيخصم منه بس فبيفضل 0
+        const breadRows: any[] = idList.length
+          ? await dbAll(
+              `SELECT id, date, tamween_customer_id, secret_number, bread_points FROM invoices
+               WHERE type = 'sales' AND (status IS NULL OR status != 'returned') AND COALESCE(bread_points,0) > 0
+                  AND (tamween_customer_id IN (${idList.map(() => "?").join(",")})${secrets.length ? ` OR (tamween_customer_id IS NULL AND secret_number IN (${secrets.map(() => "?").join(",")}))` : ""})
+               ORDER BY date DESC, id DESC`,
+              [...idList, ...secrets]
+            )
+          : [];
+        const topByCustomer: any = {}, topBySecret: any = {};
+        // الحساب بالid بس — السرّي بديل بس للصفوف اللي من غير زبون (زبون محذوف/معلّق)
+        for (const t of tops) {
+          if (t.customer_id) topByCustomer[Number(t.customer_id)] = Number((topByCustomer[Number(t.customer_id)] || 0) + Number(t.topped || 0));
+          else if (t.secret_number) { const ts = String(t.secret_number).trim(); if (ts) topBySecret[ts] = Number((topBySecret[ts] || 0) + Number(t.topped || 0)); }
+        }
+        // آخر صرف لكل زبون (الأحدث أولًا) — بنفس القاعدة: id أولًا، والسرّي للصفوف بلا زبون بس
+        const lastByCustomer: any = {}, lastBySecret: any = {};
+        for (const r of invRows) {
+          if (r.tamween_customer_id && !lastByCustomer[Number(r.tamween_customer_id)]) lastByCustomer[Number(r.tamween_customer_id)] = r;
+          else if (!r.tamween_customer_id) { const s = String(r.secret_number || "").trim(); if (s && !lastBySecret[s]) lastBySecret[s] = r; }
+        }
+        const lastIds = Array.from(new Set([...Object.values(lastByCustomer), ...Object.values(lastBySecret)]
+          .map((r: any) => Number(r?.id)).filter(Boolean)));
+        const itemsByInvoice: any = {};
+        if (lastIds.length) {
+          const items: any[] = await dbAll(
+            `SELECT invoice_id, name, quantity, unit, price, total FROM invoice_items WHERE invoice_id IN (${lastIds.map(() => "?").join(",")}) ORDER BY id`,
+            lastIds
+          );
+          for (const it of items) {
+            itemsByInvoice[it.invoice_id] = itemsByInvoice[it.invoice_id] || [];
+            itemsByInvoice[it.invoice_id].push(it);
+          }
+        }
+        for (const c of customers) {
+          const cid = Number(c.id);
+          const sec = String(c.secret_number || "").trim();
+          const topped = Number(topByCustomer[cid] ?? topBySecret[sec] ?? 0);
+          const spent = invRows
+            .filter((r) => (r.tamween_customer_id && Number(r.tamween_customer_id) === cid) || (!r.tamween_customer_id && sec && String(r.secret_number || "").trim() === sec))
+            .reduce((s, r) => s + Number(r.tamween_discount || 0), 0);
+          const last = lastByCustomer[cid] || (sec ? lastBySecret[sec] : null);
+          const curMonthDb = new Date().toISOString().slice(0, 7);
+          c.topped = Number(topped.toFixed(2));
+          c.spent = Number(spent.toFixed(2));
+          c.spent_month = Number(
+            invRows
+              .filter((r) =>
+                String(r.date || "").slice(0, 7) === curMonthDb &&
+                ((r.tamween_customer_id && Number(r.tamween_customer_id) === cid) || (!r.tamween_customer_id && sec && String(r.secret_number || "").trim() === sec))
+              )
+              .reduce((s, r) => s + Number(r.tamween_discount || 0), 0)
+              .toFixed(2)
+          );
+          c.remaining = Number((topped - spent).toFixed(2));
+          const breadMine = breadRows.filter(
+            (r: any) =>
+              (r.tamween_customer_id && Number(r.tamween_customer_id) === cid) ||
+              (!r.tamween_customer_id && sec && String(r.secret_number || "").trim() === sec)
+          );
+          c.bread_spent = Number(breadMine.reduce((s: number, r: any) => s + Number(r.bread_points || 0), 0).toFixed(2));
+          c.bread_spent_month = Number(
+            breadMine
+              .filter((r: any) => String(r.date || "").slice(0, 7) === curMonthDb)
+              .reduce((s: number, r: any) => s + Number(r.bread_points || 0), 0)
+              .toFixed(2)
+          );
+          c.last_withdraw = last
+            ? { invoice_number: last.invoice_number, date: last.date, amount: Number(last.tamween_discount || 0), items: itemsByInvoice[last.id] || [] }
+            : null;
+        }
+      } catch (e: any) {
+        console.log("[CardLedger] customers enrichment skipped:", e.message);
+      }
       res.json(customers);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // حالة بطاقة الزبون: الشحنات − المصروف + كل المتبقي موزّع على الشحنات
+  app.get("/api/tamween-card-ledger", requireAuth, async (req, res) => {
+    try {
+      let id = Number(req.query.id) || null;
+      let secret = String(req.query.secret_number || "").trim();
+      const name = String(req.query.name || "").trim();
+      if (!id && !secret) return res.status(400).json({ error: "حدد الزبون أو الرقم السري" });
+      // الرقم السري لوحده مبيثبتش الهوية (الأرقام بتتكرر بين زبائن) — والاسم لوحده كمان
+      // المطابقة بين الاتنين بتحصل بس لو اسم الزبون المكتوب عليه/له فلوس (قاعدة الكابتن)
+      if (secret && !name) {
+        const recs: any[] = await dbAll(
+          "SELECT TRIM(name) AS name FROM tamween_customers WHERE TRIM(COALESCE(secret_number,'')) = ? ORDER BY id ASC",
+          [secret]
+        );
+        return res.json({
+          mismatch: true,
+          registered_name: recs.length ? recs[0].name : "",
+          message: recs.length
+            ? `الرقم السري ${secret} مسجّل باسم "${recs[0].name}" — لازم الاسم والرقم السري مع بعض، الرقم السري لوحده ما يثبتش الهوية.`
+            : `لازم الاسم والرقم السري مع بعض — الرقم السري لوحده ما يكفيش.`,
+          topped: 0, spent: 0, remaining: 0, byMonth: [], lastWithdraw: null, rows: [], customer: null,
+        });
+      }
+      if (secret && name) {
+        const m = await matchNameSecret(name, secret);
+        if (m.error) {
+          return res.json({
+            mismatch: true,
+            registered_name: "",
+            message: m.error,
+            topped: 0, spent: 0, remaining: 0, byMonth: [], lastWithdraw: null, rows: [], customer: null,
+          });
+        }
+        // اسم جديد مفيش عليه فلوس → نفس الرقم السري مسموح يتكرر، ومفيش دفتر يتحدّث بالرقم لوحده
+        if (!m.id) secret = "";
+        else id = Number(m.id);
+      }
+      // الزبون محدّد بالمعرّف → الاسم المكتوب لازم يطابق اسمه المسجّل
+      if (id && name) {
+        const recId: any = await dbGet("SELECT TRIM(name) AS name FROM tamween_customers WHERE id = ?", [id]);
+        if (recId && String(recId.name || "").trim() !== name) {
+          return res.json({
+            mismatch: true,
+            registered_name: recId.name,
+            message: `البطاقة المسجّلة باسم "${recId.name}" — الاسم المكتوب "${name}" مش مطابق.`,
+            topped: 0, spent: 0, remaining: 0, byMonth: [], lastWithdraw: null, rows: [], customer: null,
+          });
+        }
+      }
+      const state = await getCardState(id, secret);
+      const byMonth = await getCardByMonth(id, secret);
+      const lastWithdraw = await getCardLastWithdraw(id, secret);
+      // مسحوب الشهر الحالي (سكر/زيت) عشان الحدود التراكمية في شاشة الكاشير
+      let monthUsed = { month: String(new Date().toISOString()).slice(0, 7), sugar: 0, oil: 0 };
+      if (id) {
+        const rowsMU: any[] = await dbAll(
+          `SELECT ii.name, ii.quantity FROM invoice_items ii
+           JOIN invoices i ON i.id = ii.invoice_id
+           WHERE i.type = 'sales' AND (i.status IS NULL OR i.status != 'returned')
+             AND i.tamween_customer_id = ? AND substr(i.date, 1, 7) = ?`,
+          [id, monthUsed.month]
+        );
+        for (const r of rowsMU) {
+          const nm = String(r.name || "");
+          if (nm.includes("سكر")) monthUsed.sugar += Number(r.quantity || 0);
+          if (nm.includes("زيت")) monthUsed.oil += Number(r.quantity || 0);
+        }
+      }
+      const w = getCardLedgerWhere(id, secret);
+      const rows = await dbAll(`SELECT * FROM tamween_card_ledger WHERE ${w.sql} ORDER BY id DESC LIMIT 100`, w.params);
+      const customer: any = id
+        ? await dbGet("SELECT id, TRIM(name) AS name, secret_number, card_value, bread_points, status, status_month, pending_sale_json FROM tamween_customers WHERE id = ?", [id])
+        : null;
+      res.json({ ...state, byMonth, lastWithdraw, rows, customer, monthUsed });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // سجل كامل لكل عمليات الكارت (شحن + صرف بكل أصنافه) من يوم ما اتحفظ — زر «تفاصيل» في شاشة البيع
+  app.get("/api/tamween-card-ledger/history", requireAuth, async (req, res) => {
+    try {
+      let id = Number(req.query.id) || null;
+      let secret = String(req.query.secret_number || "").trim();
+      const name = String(req.query.name || "").trim();
+      if (!id && !secret) return res.status(400).json({ error: "حدد الزبون أو الرقم السري" });
+      // المطابقة لازم بالاسم والرقم السري مع بعض (نفس قاعدة شاشة البيع) — الرقم لوحده مبيثبتش الهوية
+      // والرفض بيحصل بس لو اسم الزبون المكتوب عليه/له فلوس (قاعدة الكابتن)
+      if (!id && secret) {
+        if (!name) {
+          return res.status(400).json({
+            error: `الرقم السري ${secret} لوحده ما يثبتش الهوية — لازم الاسم والرقم السري مع بعض.`,
+          });
+        }
+        const m = await matchNameSecret(name, secret);
+        if (m.error) return res.status(400).json({ error: m.error });
+        // اسم جديد مفيش عليه فلوس → نفس الرقم السري مسموح يتكرر، السجل يفضل فاضي
+        if (!m.id) secret = "";
+        else id = Number(m.id);
+      }
+      if (id && name) {
+        const recId: any = await dbGet("SELECT TRIM(name) AS name FROM tamween_customers WHERE id = ?", [id]);
+        if (recId && String(recId.name || "").trim() !== name) {
+          return res.status(400).json({
+            error: `البطاقة المسجّلة باسم "${recId.name}" — الاسم المكتوب "${name}" مش مطابق.`,
+          });
+        }
+      }
+      const state = await getCardState(id, secret);
+      const w = getCardLedgerWhere(id, secret);
+      const chargeRows: any[] = await dbAll(
+        `SELECT id, month, type, amount, note, invoice_number, created_by, created_at FROM tamween_card_ledger WHERE ${w.sql} ORDER BY id ASC`,
+        w.params
+      );
+      const charges = chargeRows
+        .filter((r: any) => String(r.type || "") === "شحن")
+        .map((r: any) => ({
+          date: String(r.created_at || r.month || ""),
+          ts: String(r.created_at || ""),
+          amount: Number(r.amount || 0),
+          note: String(r.note || ""),
+          invoice_number: String(r.invoice_number || ""),
+          created_by: String(r.created_by || ""),
+        }));
+      const invRows: any[] = await dbAll(
+        `SELECT id, invoice_number, date, created_at, tamween_discount, bread_points, bonus, total, paid, created_by
+         FROM invoices
+         WHERE type = 'sales' AND (status IS NULL OR status != 'returned') AND COALESCE(tamween_discount,0) > 0
+           AND ${id ? "tamween_customer_id = ?" : "(? != '' AND secret_number = ?)"}
+         ORDER BY id ASC`,
+        w.params
+      );
+      const withdrawals: any[] = [];
+      for (const inv of invRows) {
+        const items: any[] = await dbAll(
+          "SELECT name, quantity, unit, price, total FROM invoice_items WHERE invoice_id = ? ORDER BY id",
+          [inv.id]
+        );
+        withdrawals.push({
+          date: String(inv.date || ""),
+          ts: String(inv.created_at || inv.date || ""),
+          invoice_number: String(inv.invoice_number || ""),
+          amount: Number(inv.tamween_discount || 0),
+          bread_points: Number(inv.bread_points || 0),
+          bonus: Number(inv.bonus || 0),
+          total: Number(inv.total || 0),
+          paid: Number(inv.paid || 0),
+          created_by: String(inv.created_by || ""),
+          items,
+        });
+      }
+      const customer: any = id
+        ? await dbGet(
+            "SELECT id, TRIM(name) AS name, secret_number, card_value, bread_points, status, status_month, created_at FROM tamween_customers WHERE id = ?",
+            [id]
+          )
+        : null;
+      const timeline: any[] = [
+        ...charges.map((c: any) => ({ kind: "charge", ...c })),
+        ...withdrawals.map((v: any) => ({ kind: "withdraw", ...v })),
+      ].sort((a: any, b: any) => String(b.ts || "").localeCompare(String(a.ts || "")));
+      res.json({ customer, ...state, charges, withdrawals, timeline });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // شحن/إضافة قيمة كارت لزبون (نفس الزبون في شهر جديد = إضافة مش استبدال)
+  app.post("/api/tamween-card-ledger/topup", requireAuth, async (req, res) => {
+    try {
+      const { customer_id, secret_number, month, amount, note } = req.body;
+      const value = Number(amount);
+      if (!value || value <= 0) return res.status(400).json({ error: "قيمة الشحن غير صحيحة" });
+      if (!Number.isInteger(value)) return res.status(400).json({ error: "قيمة الشحن لازم تكون رقم كامل بالجنيه من غير قروش (مثال: 48 أو 98)." });
+      let customerId: number | null = Number(customer_id) || null;
+      let secret = String(secret_number || "").trim();
+      if (!customerId && !secret) return res.status(400).json({ error: "حدد الزبون" });
+      if (!customerId && secret) {
+        const bySecret: any = await dbGet("SELECT id FROM tamween_customers WHERE secret_number = ?", [secret]);
+        if (bySecret) customerId = Number(bySecret.id);
+      }
+      const when = /^\d{4}-\d{2}$/.test(String(month || "")) ? String(month) : new Date().toISOString().slice(0, 7);
+      const userName = (req as any)?.user?.name || "";
+      await dbRun(
+        `INSERT INTO tamween_card_ledger (customer_id, secret_number, month, type, amount, note, created_by, created_at)
+         VALUES (?, ?, ?, 'شحن', ?, ?, ?, ?)`,
+        [customerId, secret, when, value, note || "", userName, new Date().toISOString()]
+      );
+      if (customerId) {
+        await dbRun("UPDATE tamween_customers SET card_value = COALESCE(card_value,0) + ? WHERE id = ?", [value, customerId]);
+        await dbRun("UPDATE tamween_customers SET status = 'later', status_month = ? WHERE id = ? AND status = 'withdrawn'", [when, customerId]);
+      }
+      await dbRun(
+        "INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, ?, ?)",
+        [new Date().toISOString(), userName || "System", "شحن كارت تموين", `إضافة ${value.toFixed(2)} ج.م${secret ? " للعميل " + secret : ""} (شهر ${when})`]
+      );
+      res.json({ success: true, ...(await getCardState(customerId, secret)) });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -3587,7 +4889,7 @@ async function startServer() {
       
       // Get invoices with tamween_discount for this month
       const invoices = await dbAll(
-        "SELECT invoice_number, date, customer_supplier_name, subtotal, discount, tamween_discount, total, paid FROM invoices WHERE type = 'sales' AND tamween_discount > 0 AND date LIKE ? ORDER BY date ASC",
+        "SELECT id, invoice_number, date, customer_supplier_name, subtotal, discount, tamween_discount, total, paid, remaining, payment_source, status, created_by FROM invoices WHERE type = 'sales' AND tamween_discount > 0 AND date LIKE ? ORDER BY date ASC",
         [`${month}%`]
       );
       
@@ -3610,7 +4912,13 @@ async function startServer() {
       const withdrawnCount = customers.filter((c: any) => c.status === 'withdrawn').length;
       const laterCount = customers.filter((c: any) => c.status === 'later').length;
       const totalReplacementsValue = replacements.reduce((sum: number, r: any) => sum + (r.total_value || 0), 0);
-      
+
+      // فواتير نقاط الخبز في الشهر (لائحة منبثقة في لوحة المنظومة)
+      const breadInvoices = await dbAll(
+        "SELECT id, invoice_number, date, customer_supplier_name, bread_points, total, paid, remaining, payment_source, status, created_by FROM invoices WHERE type = 'sales' AND bread_points > 0 AND (status != 'returned' OR status IS NULL) AND date LIKE ? ORDER BY date ASC",
+        [`${month}%`]
+      );
+
       res.json({
         month,
         summary: {
@@ -3625,9 +4933,126 @@ async function startServer() {
           total_replacements_value: totalReplacementsValue
         },
         invoices,
+        breadInvoices,
         customers,
         replacements
       });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // API - مستحقات نقاط الخبز (بتتجمع من أول الشهر لآخره وتترد مرة واحدة بعد انتهاء الفترة)
+  const breadPointsTotals = async () => {
+    const accRow: any = await dbGet(
+      `SELECT COALESCE(SUM(bread_points),0) AS accrued FROM invoices
+       WHERE type = 'sales' AND (status IS NULL OR status != 'returned') AND COALESCE(bread_points,0) > 0`
+    );
+    const setRow: any = await dbGet(
+      "SELECT COALESCE(SUM(expected),0) AS expected, COALESCE(SUM(amount),0) AS actual, COALESCE(SUM(fee),0) AS fee FROM bread_settlements"
+    );
+    const accrued = Number(accRow?.accrued || 0);
+    const settledExpected = Number(setRow?.expected || 0);
+    const settledActual = Number(setRow?.actual || 0);
+    const feeTotal = Number(setRow?.fee || 0);
+    return {
+      accrued,
+      settledExpected,
+      settledActual,
+      settled: settledActual,
+      fee: feeTotal,
+      balance: accrued - settledExpected,
+    };
+  };
+
+  app.get("/api/bread-points", requireAuth, async (req, res) => {
+    try {
+      const totals = await breadPointsTotals();
+      const invoices = await dbAll(
+        `SELECT id, invoice_number, date, customer_supplier_name AS customer_name, total, bread_points FROM invoices
+         WHERE type = 'sales' AND (status IS NULL OR status != 'returned') AND COALESCE(bread_points,0) > 0
+         ORDER BY date DESC, id DESC LIMIT 50`
+      );
+      const settlements = await dbAll(
+        "SELECT * FROM bread_settlements ORDER BY id DESC, date DESC LIMIT 50"
+      );
+      // مقارنة لكل فترة: المتجمّع عندك ↔ اللي نزل فعلًا ↔ رسوم البنك
+      const byPeriod: any = {};
+      const accByPeriod = await dbAll(
+        `SELECT substr(date,1,7) AS period, COALESCE(SUM(bread_points),0) AS accrued FROM invoices
+         WHERE type = 'sales' AND (status IS NULL OR status != 'returned') AND COALESCE(bread_points,0) > 0
+         GROUP BY substr(date,1,7)`
+      );
+      for (const r of accByPeriod) {
+        byPeriod[r.period] = { period: r.period, accrued: Number(r.accrued || 0), expected: 0, actual: 0, fee: 0, settled: false };
+      }
+      for (const s of settlements) {
+        const p = String(s.period || "").slice(0, 7);
+        if (!p) continue;
+        byPeriod[p] = byPeriod[p] || { period: p, accrued: 0, expected: 0, actual: 0, fee: 0, settled: false };
+        byPeriod[p].expected += Number(s.expected || 0);
+        byPeriod[p].actual += Number(s.amount || 0);
+        byPeriod[p].fee += Number(s.fee || 0);
+        byPeriod[p].settled = true;
+      }
+      const periods = Object.values(byPeriod).sort((a: any, b: any) => String(b.period).localeCompare(String(a.period)));
+      res.json({ ...totals, invoices, settlements, periods });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/bread-points/settle", requireAuth, async (req, res) => {
+    try {
+      const { period, actual, note, date } = req.body;
+      const currentMonth = new Date().toISOString().slice(0, 7);
+      if (!/^\d{4}-\d{2}$/.test(String(period || ""))) return res.status(400).json({ error: "الفترة غير صحيحة" });
+      if (period >= currentMonth) {
+        return res.status(400).json({ error: `فترة ${period} لسه شغالة — التسوية من أول الشهر لآخره وبعد انتهائها فقط` });
+      }
+      const dup: any = await dbGet("SELECT id FROM bread_settlements WHERE period = ?", [period]);
+      if (dup) return res.status(400).json({ error: `فترة ${period} متسوّية بالفعل` });
+
+      const acc: any = await dbGet(
+        `SELECT COALESCE(SUM(bread_points),0) AS accrued FROM invoices
+         WHERE type = 'sales' AND (status IS NULL OR status != 'returned') AND COALESCE(bread_points,0) > 0
+           AND substr(date,1,7) = ?`,
+        [period]
+      );
+      const expected = Number(acc?.accrued || 0);
+      if (expected <= 0) return res.status(400).json({ error: `مفيش نقاط خبز متجمّعة في ${period}` });
+
+      const received = Number(actual);
+      if (isNaN(received) || received < 0) return res.status(400).json({ error: "المبلغ الفعلي غير صحيح" });
+      if (received > expected + 0.001) return res.status(400).json({ error: `المبلغ أكبر من المتوقع (${expected.toFixed(2)} ج.م) لشهر ${period}` });
+      const feeValue = Number((expected - received).toFixed(2));
+      const userName = (req as any)?.user?.name || "";
+      const when = date || new Date().toISOString();
+
+      await dbRun(
+        "INSERT INTO bread_settlements (date, amount, note, created_by, created_at, period, expected, fee) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [when, received, note || "", userName, new Date().toISOString(), period, expected, feeValue]
+      );
+      // الخزينة تستقبل المبلغ اللي نزل فعلًا (الناقص)
+      await dbRun(
+        "INSERT INTO treasury_transactions (type, amount, source, destination, date, notes, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ["deposit", received, "نقاط الخبز", "main_safe", new Date().toISOString(), `استلام نقاط الخبز ${period}${note ? " - " + note : ""}`, userName || "System"]
+      );
+      // رسوم البنك: مصروف مسجّل بس من غير خصم من الخزينة (الفرق اتخصم من البنك أصلًا)
+      if (feeValue > 0) {
+        await dbRun(
+          "INSERT INTO expenses (title, amount, date, category, notes, payment_source) VALUES (?, ?, ?, ?, ?, ?)",
+          [`رسوم بنكية — نقاط الخبز ${period}`, feeValue, when, "رسوم بنكية",
+           `خصم البنك عن استلام نقاط الخبز ${period}: المتوقع ${expected.toFixed(2)} والمنزل ${received.toFixed(2)}`, "bank"]
+        );
+      }
+      await dbRun(
+        "INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, ?, ?)",
+        [new Date().toISOString(), userName || "System", "استلام نقاط الخبز",
+         `فترة ${period}: متوقع ${expected.toFixed(2)} • منزل ${received.toFixed(2)} • رسوم ${feeValue.toFixed(2)}`]
+      );
+
+      res.json(await breadPointsTotals());
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -3981,8 +5406,31 @@ async function startServer() {
   app.get("/api/tamween-customers/by-secret/:secret", async (req, res) => {
     try {
       const { secret } = req.params;
-      const customer = await dbGet("SELECT * FROM tamween_customers WHERE secret_number = ?", [secret]);
-      res.json(customer || null);
+      const name = String(req.query.name || "").trim();
+      const rows: any[] = await dbAll(
+        "SELECT * FROM tamween_customers WHERE TRIM(COALESCE(secret_number,'')) = ? ORDER BY id ASC",
+        [String(secret || "").trim()]
+      );
+      if (!rows.length) return res.json(null);
+      // الرقم السري وارد يتكرر مع أكتر من زبون → ما نبقاش نبص على أول صف غير المطابق
+      if (!name) {
+        return res.json({
+          mismatch: true,
+          message: `الرقم السري ${secret} مسجّل باسم "${String(rows[0].name || "").trim()}" — لازم الاسم والرقم السري مع بعض.`,
+        });
+      }
+      const hit = rows.find((r: any) => String(r.name || "").trim() === name);
+      if (hit) return res.json(hit);
+      // الفلوس هي الفيصل: لو على الاسم المكتوب كارت → لازم الرقم السري يطابقه (الاسم والرقم مع بعض)
+      const rich = await identityHasMoney(name);
+      if (rich.length) {
+        return res.json({
+          mismatch: true,
+          message: `الاسم "${name}" مسجّل ومعاه كارت${rich[0].registered_secret ? ` (الرقم السري ${rich[0].registered_secret})` : ""} — الرقم السري ${secret} مش تابع له.`,
+        });
+      }
+      // مفيش فلوس على الاسم ده → زبون جديد يستخدم نفس الرقم السري مسموح
+      res.json(null);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -4018,16 +5466,40 @@ async function startServer() {
       if (!name || !secret_number) {
         return res.status(400).json({ error: "اسم العميل والرقم السري مطلوبين" });
       }
-      const exists = await dbGet("SELECT id FROM tamween_customers WHERE secret_number = ?", [secret_number]);
+      if (card_value != null && Number(card_value) !== 0 && !Number.isInteger(Number(card_value))) {
+        return res.status(400).json({ error: "قيمة البطاقة لازم تكون رقم كامل بالجنيه من غير قروش (مثال: 48 أو 98)." });
+      }
+      // الرقم السري مسموح يتكرر مع زبون تاني (قاعدة الكابتن — طلب 39/50) · الممنوع: نفس الاسم ونفس الرقم السري (نفس الشخص مرتين)
+      const exists: any = await dbGet(
+        "SELECT id FROM tamween_customers WHERE TRIM(name) = ? AND TRIM(COALESCE(secret_number,'')) = ?",
+        [String(name).trim(), String(secret_number).trim()]
+      );
       if (exists) {
-        return res.status(400).json({ error: "الرقم السري مسجل بالفعل لعميل آخر" });
+        return res.status(400).json({ error: `الزبون "${name}" بالرقم السري ${secret_number} مسجّل بالفعل — الرقم السري مسموح يتكرر بس مع اسم مختلف.` });
       }
       const pendingJson = pending_sale ? JSON.stringify(pending_sale) : "";
-      await dbRun(
+      const inserted = await dbRun(
         "INSERT INTO tamween_customers (name, secret_number, phone, card_value, bread_points, pending_sale_json, status, status_month, created_at) VALUES (?, ?, ?, ?, ?, ?, '', '', ?)",
         [name, secret_number, phone || "", card_value || 0, bread_points || 0, pendingJson, new Date().toISOString()]
       );
-      const newCustomer = await dbGet("SELECT * FROM tamween_customers WHERE secret_number = ?", [secret_number]);
+      // بالتحديد بـ last_insert_rowid مش بالرقم السري — الرقم ممكن يكون عند زبون قديم (طلب 50)
+      const newCustomer = await dbGet("SELECT * FROM tamween_customers WHERE id = ?", [inserted.id]);
+      // دفتر البطاقات: تسجيل أول شحن لقيمة البطاقة
+      if (Number(card_value) > 0 && newCustomer) {
+        await dbRun(
+          `INSERT INTO tamween_card_ledger (customer_id, secret_number, month, type, amount, note, created_by, created_at)
+           VALUES (?, ?, ?, 'شحن', ?, ?, '', ?)`,
+          [newCustomer.id, secret_number, new Date().toISOString().slice(0, 7), Number(card_value), "تسجيل بطاقة جديدة", new Date().toISOString()]
+        );
+      }
+      // دفتر البطاقات: تسجيل أول شحن للنقاط (زي الكارت — طلب 57)
+      if (Number(bread_points) > 0 && newCustomer) {
+        await dbRun(
+          `INSERT INTO tamween_card_ledger (customer_id, secret_number, month, type, amount, note, created_by, created_at)
+           VALUES (?, ?, ?, 'شحن نقاط', ?, ?, '', ?)`,
+          [newCustomer.id, secret_number, new Date().toISOString().slice(0, 7), Number(bread_points), "تسجيل نقاط جديدة", new Date().toISOString()]
+        );
+      }
       res.json({ success: true, customer: newCustomer });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -4038,16 +5510,63 @@ async function startServer() {
     try {
       const { id } = req.params;
       const { name, secret_number, phone, card_value, bread_points, pending_sale } = req.body;
+      if (card_value != null && Number(card_value) !== 0 && !Number.isInteger(Number(card_value))) {
+        return res.status(400).json({ error: "قيمة البطاقة لازم تكون رقم كامل بالجنيه من غير قروش (مثال: 48 أو 98)." });
+      }
+      // ما نخلّيش صف تاني بنفس الاسم ونفس الرقم السري (نفس الشخص مرتين) — الرقم السري لوحده مسموح يتكرر
+      if (String(name || "").trim() && String(secret_number || "").trim()) {
+        const clash: any = await dbGet(
+          "SELECT id FROM tamween_customers WHERE TRIM(name) = ? AND TRIM(COALESCE(secret_number,'')) = ? AND id != ?",
+          [String(name).trim(), String(secret_number).trim(), Number(id)]
+        );
+        if (clash) {
+          return res.status(400).json({ error: `الزبون "${name}" بالرقم السري ${secret_number} مسجّل بالفعل لزبون تاني.` });
+        }
+      }
+      const prev: any = await dbGet("SELECT card_value, bread_points, status, status_month FROM tamween_customers WHERE id = ?", [id]);
+      const prevVal = Number(prev?.card_value || 0);
+      const nextVal = card_value === undefined ? prevVal : Number(card_value || 0);
+      const delta = Number((nextVal - prevVal).toFixed(2));
+      // نقاط الخبز: ما نستبدلش الرصيد إلا لو الطلب جابه صراحة (الخصم الفعلي بيحصل في حفظ الفاتورة)
+      const nextBread = bread_points === undefined ? Number(prev?.bread_points || 0) : Number(bread_points || 0);
+      // زبون اصرف الشهر ده: مفيش فاتورة مؤجّلة تفضل مخزنة (الفاتورة اتحفظت والبضاعة خرجت)
+      const curMonthKey = new Date().toISOString().slice(0, 7);
+      const withdrawnNow =
+        String(prev?.status || "") === "withdrawn" && String(prev?.status_month || "").slice(0, 7) === curMonthKey;
+      let pendingJson: string | null = null;
       if (pending_sale !== undefined) {
-        const pendingJson = pending_sale ? JSON.stringify(pending_sale) : "";
+        pendingJson = pending_sale && !withdrawnNow ? JSON.stringify(pending_sale) : "";
+      } else if (withdrawnNow) {
+        pendingJson = "";
+      }
+      if (pendingJson !== null) {
         await dbRun(
           "UPDATE tamween_customers SET name=?, secret_number=?, phone=?, card_value=?, bread_points=?, pending_sale_json=? WHERE id=?",
-          [name, secret_number, phone, card_value, bread_points, pendingJson, id]
+          [name, secret_number, phone || "", nextVal, nextBread, pendingJson, id]
         );
       } else {
         await dbRun(
           "UPDATE tamween_customers SET name=?, secret_number=?, phone=?, card_value=?, bread_points=? WHERE id=?",
-          [name, secret_number, phone, card_value, bread_points, id]
+          [name, secret_number, phone || "", nextVal, nextBread, id]
+        );
+      }
+      // دفتر البطاقات: أي فرق في قيمة البطاقة يتسجّل كحركة (إضافة أو تسوية خصم)
+      if (Math.abs(delta) > 0.001) {
+        await dbRun(
+          `INSERT INTO tamween_card_ledger (customer_id, secret_number, month, type, amount, note, created_by, created_at)
+           VALUES (?, ?, ?, 'شحن', ?, ?, '', ?)`,
+          [Number(id), String(secret_number || "").trim(), new Date().toISOString().slice(0, 7), delta,
+           delta > 0 ? "إضافة قيمة كارت" : "تسوية يدوي — خصم من قيمة الكارت", new Date().toISOString()]
+        );
+      }
+      // دفتر البطاقات: أي فرق في النقاط يتسجّل كحركة (زي الكارت — طلب 57)
+      const breadDelta = Number((nextBread - Number(prev?.bread_points || 0)).toFixed(2));
+      if (Math.abs(breadDelta) > 0.001) {
+        await dbRun(
+          `INSERT INTO tamween_card_ledger (customer_id, secret_number, month, type, amount, note, created_by, created_at)
+           VALUES (?, ?, ?, 'شحن نقاط', ?, ?, '', ?)`,
+          [Number(id), String(secret_number || "").trim(), new Date().toISOString().slice(0, 7), breadDelta,
+           breadDelta > 0 ? "إضافة نقاط" : "تسوية يدوي — خصم من النقاط", new Date().toISOString()]
         );
       }
       res.json({ success: true });
@@ -4095,6 +5614,11 @@ async function startServer() {
       if (!(Number(customer.card_value) > 0)) {
         return res.status(400).json({ error: "لا يمكن الحفظ كصرف لاحق بدون كارت تموين (قيمة البطاقة = 0)." });
       }
+      // الشرط الصريح: الكارت خلص بالكامل → ممنوع «صرف لاحق» ولا «صرف جزئي»، الصرف لازم يكون كليًا الآن
+      const cardNow = await getCardState(Number(id), String(customer.secret_number || ""));
+      if (!(cardNow.remaining > 0.001)) {
+        return res.status(400).json({ error: "الكارت خلص بالكامل — الصرف لازم يكون كليًا الآن (ممنوع صرف لاحق أو جزئي لعدم الالتباس)." });
+      }
       await dbRun("UPDATE tamween_customers SET status = 'later', status_month = ? WHERE id = ?", [currentMonth, id]);
       res.json({ success: true });
     } catch (err: any) {
@@ -4139,10 +5663,11 @@ async function startServer() {
       if (!customer) return res.status(404).json({ error: "العميل غير موجود" });
       
       // Link by stable ID first, fallback to name/secret for old invoices (before ID linking)
+      // — والسرّي/الاسم بديل بس للفواتير اللي من غير زبون (طلب 57: مفيش خلط بين زبائن نفس السرّي)
       let invoices: any[] = [];
       try {
         invoices = await dbAll(
-          "SELECT id, invoice_number, date, customer_supplier_name, subtotal, discount, tamween_discount, bread_points, bonus, total, paid, remaining, status, created_by, created_at, tamween_customer_id, secret_number FROM invoices WHERE type = 'sales' AND (tamween_customer_id = ? OR customer_supplier_name = ? OR secret_number = ?) ORDER BY date DESC, id DESC",
+          "SELECT id, invoice_number, date, customer_supplier_name, subtotal, discount, tamween_discount, bread_points, bonus, total, paid, remaining, status, created_by, created_at, tamween_customer_id, secret_number, details FROM invoices WHERE type = 'sales' AND (tamween_customer_id = ? OR (tamween_customer_id IS NULL AND (customer_supplier_name = ? OR secret_number = ?))) ORDER BY date DESC, id DESC",
           [customer.id, customer.name, customer.secret_number]
         );
       } catch {
@@ -4170,56 +5695,98 @@ async function startServer() {
   });
 
   // Treasury API
+  // ——— المدفوع المتحصّل بحركة خزنة ———
+  // الفاتورة ممكن تتدفع جزؤها وقت الإنشاء (من payment_source بتاع الفاتورة)
+  // وجزؤها الآخر بعدين بحركة تحصيل/سداد (من source/destination بتاع الحركة).
+  // بنطرح الجزء المتحصّل من invoices.paid عشان ما يتحسبش مرتين:
+  // مرة من جدول الفواتير ومرة تانية من لوب treasury_transactions.
+  // ملاحظة: `' %'` بدل `'%'` عشان رقم الفاتورة 12 ما يطابقش حركة فاتورة 123.
+  const collectedSQL = (alias: string, txType: "deposit" | "withdraw", notesPrefix: string) => `
+    COALESCE((
+      SELECT SUM(t.amount) FROM treasury_transactions t
+      WHERE t.type = '${txType}'
+        AND (
+          (t.invoice_id IS NOT NULL AND t.invoice_id = ${alias}.id)
+          OR (t.invoice_id IS NULL
+              AND COALESCE(${alias}.invoice_number, '') <> ''
+              AND t.notes LIKE '${notesPrefix}' || ${alias}.invoice_number || ' %')
+        )
+    ), 0)`;
+
+  const computeBalances = async (): Promise<{ cash_register: number; main_safe: number }> => {
+    const sales = await dbAll(
+      `SELECT payment_source, SUM(paid - ${collectedSQL("i", "deposit", "تحصيل آجل فاتورة ")}) as total_paid
+       FROM invoices i
+       WHERE i.type = 'sales' AND (i.status != 'returned' OR i.status IS NULL)
+       GROUP BY payment_source`
+    );
+    const purchases = await dbAll(
+      `SELECT payment_source, SUM(paid - ${collectedSQL("i", "withdraw", "سداد مشتريات فاتورة ")}) as total_paid
+       FROM invoices i
+       WHERE i.type = 'purchases' AND (i.status != 'returned' OR i.status IS NULL)
+       GROUP BY payment_source`
+    );
+    const expenses = await dbAll("SELECT payment_source, SUM(amount) as total_amount FROM expenses GROUP BY payment_source");
+
+    let cash_register = 0;
+    let main_safe = 0;
+
+    sales.forEach(s => {
+      const v = Number(s.total_paid || 0);
+      if (s.payment_source === 'cash_register') cash_register += v;
+      if (s.payment_source === 'main_safe') main_safe += v;
+    });
+
+    purchases.forEach(p => {
+      const v = Number(p.total_paid || 0);
+      if (p.payment_source === 'cash_register') cash_register -= v;
+      if (p.payment_source === 'main_safe') main_safe -= v;
+    });
+
+    expenses.forEach(e => {
+      const source = e.payment_source || 'cash_register';
+      if (source === 'cash_register') cash_register -= e.total_amount;
+      if (source === 'main_safe') main_safe -= e.total_amount;
+    });
+
+    const allTx = await dbAll(`
+      SELECT t.type, t.amount, t.source, t.destination, t.notes, t.invoice_id, i.type AS inv_type
+      FROM treasury_transactions t
+      LEFT JOIN invoices i ON i.id = t.invoice_id
+    `);
+    allTx.forEach(tx => {
+      const amt = Number(tx.amount || 0);
+      // حركة متعلّقة بفاتورة باتجاه عكس الحساب بتاعها = سجل تدقيق بس
+      // (الفاتورة نفسها اتغيّرت في paid، فالحساب جاهز منها) — من غير كده هتتخصم مرتين
+      if (
+        tx.invoice_id != null &&
+        ((tx.inv_type === "sales" && tx.type === "withdraw") ||
+          (tx.inv_type === "purchases" && tx.type === "deposit"))
+      ) {
+        return;
+      }
+      if (tx.type === 'deposit') {
+        if (tx.destination === 'cash_register') cash_register += amt;
+        if (tx.destination === 'main_safe') main_safe += amt;
+      } else if (tx.type === 'withdraw') {
+        if (tx.source === 'cash_register') cash_register -= amt;
+        if (tx.source === 'main_safe') main_safe -= amt;
+      } else if (tx.type === 'transfer') {
+        if (tx.source === 'cash_register') cash_register -= amt;
+        if (tx.source === 'main_safe') main_safe -= amt;
+        if (tx.destination === 'cash_register') cash_register += amt;
+        if (tx.destination === 'main_safe') main_safe += amt;
+      }
+    });
+
+    return { cash_register: +cash_register.toFixed(2), main_safe: +main_safe.toFixed(2) };
+  };
+
   app.get("/api/treasury", async (req, res) => {
     try {
-      const sales = await dbAll("SELECT payment_source, SUM(paid) as total_paid FROM invoices WHERE type = 'sales' AND (status != 'returned' OR status IS NULL) GROUP BY payment_source");
-      const purchases = await dbAll("SELECT payment_source, SUM(paid) as total_paid FROM invoices WHERE type = 'purchases' AND (status != 'returned' OR status IS NULL) GROUP BY payment_source");
-      const expenses = await dbAll("SELECT payment_source, SUM(amount) as total_amount FROM expenses GROUP BY payment_source");
-      
+      const balances = await computeBalances();
       const transactions = await dbAll("SELECT * FROM treasury_transactions ORDER BY id DESC LIMIT 50");
-      
-      let cash_register = 0;
-      let main_safe = 0;
-
-      sales.forEach(s => {
-        if (s.payment_source === 'cash_register') cash_register += s.total_paid;
-        if (s.payment_source === 'main_safe') main_safe += s.total_paid;
-      });
-
-      purchases.forEach(p => {
-        if (p.payment_source === 'cash_register') cash_register -= p.total_paid;
-        if (p.payment_source === 'main_safe') main_safe -= p.total_paid;
-      });
-
-      expenses.forEach(e => {
-        const source = e.payment_source || 'cash_register';
-        if (source === 'cash_register') cash_register -= e.total_amount;
-        if (source === 'main_safe') main_safe -= e.total_amount;
-      });
-
-      const allTx = await dbAll("SELECT * FROM treasury_transactions");
-      allTx.forEach(tx => {
-        if (tx.type === 'deposit') {
-          if (tx.destination === 'cash_register') cash_register += tx.amount;
-          if (tx.destination === 'main_safe') main_safe += tx.amount;
-        } else if (tx.type === 'withdraw') {
-          if (tx.source === 'cash_register') cash_register -= tx.amount;
-          if (tx.source === 'main_safe') main_safe -= tx.amount;
-        } else if (tx.type === 'transfer') {
-          if (tx.source === 'cash_register') cash_register -= tx.amount;
-          if (tx.source === 'main_safe') main_safe -= tx.amount;
-          if (tx.destination === 'cash_register') cash_register += tx.amount;
-          if (tx.destination === 'main_safe') main_safe += tx.amount;
-        }
-      });
-
-      res.json({
-        balances: {
-          cash_register,
-          main_safe
-        },
-        transactions
-      });
+      res.json({ balances, transactions });
     } catch (e) {
       res.status(500).json({ error: e.message });
     }
@@ -4229,6 +5796,19 @@ async function startServer() {
     try {
         const { type, amount, source, destination, notes, user_name } = req.body;
         if (!amount || amount <= 0) return res.status(400).json({error: "المبلغ غير صحيح"});
+        if (type !== "deposit" && type !== "withdraw" && type !== "transfer") {
+            return res.status(400).json({ error: "نوع الحركة غير صحيح." });
+        }
+        // أي خروج من الدرج/الخزنة لازم يبقى ضمن الرصيد المتاح — من غير كده الخزنة بتروح بالسالب
+        if ((type === "withdraw" || type === "transfer") && (source === "cash_register" || source === "main_safe")) {
+            const bal = await computeBalances();
+            const available = source === "cash_register" ? bal.cash_register : bal.main_safe;
+            if (Number(amount) > available + 0.001) {
+                return res.status(400).json({
+                    error: `الرصيد غير كافٍ في ${source === "cash_register" ? "الدرج" : "الخزنة"} — المتاح ${available.toFixed(2)} ج.م والمطلوب ${Number(amount).toFixed(2)} ج.م.`
+                });
+            }
+        }
 
         await dbRun("INSERT INTO treasury_transactions (type, amount, source, destination, date, notes, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)", [
             type, Number(amount), source, destination, new Date().toISOString(), notes, user_name || 'System'
@@ -4246,6 +5826,248 @@ async function startServer() {
         res.json({ success: true });
     } catch (e) {
         res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ==================== تقفيل الصندوق — APIs ====================
+  // صلاحية: admin/developer مباشرة، أو أي دور عنده 'drawer'
+  const requireDrawer = async (req: any, res: any, next: any) => {
+    const role = req.user?.role;
+    if (role === "admin" || role === "developer") return next();
+    try {
+      const u = await dbGet("SELECT permissions FROM users WHERE id = ?", [req.user?.id]);
+      let perms: any = [];
+      try { perms = JSON.parse(u?.permissions || "[]"); } catch { perms = []; }
+      if (Array.isArray(perms) && perms.includes("drawer")) return next();
+    } catch {}
+    return res.status(403).json({ error: "محتاج صلاحية تقفيل الصندوق" });
+  };
+
+  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  const isCashMethod = (m: any) => m === null || m === undefined || m === "" || m === "cash" || m === "credit";
+
+  // فاصل زمني: بعد آخر تقفيلة (حصرًا) لحد تاريخ التقفيل (inclusive)
+  const periodCond = (col: string, start: string | null, end: string) =>
+    start ? `${col} > ? AND ${col} <= ?` : `${col} <= ?`;
+  const periodParams = (start: string | null, end: string) => (start ? [start, end] : [end]);
+
+  // حساب المتوقع لصندوق الكاشير في يوم محدد
+  // القاعدة: المتوقع = رصيد آخر تقفيلة (أو صفر لو مفيش) + حركات الفترة
+  const computeDrawerPreview = async (dateStr: string) => {
+    const lastClosing = await dbGet(
+      "SELECT * FROM drawer_closings WHERE date < ? ORDER BY date DESC LIMIT 1",
+      [dateStr]
+    );
+    const existingClosing = await dbGet("SELECT * FROM drawer_closings WHERE date = ?", [dateStr]);
+    const start = lastClosing ? String(lastClosing.date) : null;
+    const opening = lastClosing ? Number(lastClosing.counted || 0) : 0;
+    const p = () => periodParams(start, dateStr);
+
+    // 1) مبيعات كاش من الدرج — نرجّع المبلغ وقت البيع (paid + مرتجعات جزئية - تحصيلات الآجل)
+    //   `' %'` بدل `'%'` عشان رقم الفاتورة 12 ما يطابقش حركة فاتورة 123
+    const salesIn = Number((await dbGet(`
+      SELECT COALESCE(SUM(
+        i.paid
+        + COALESCE((SELECT SUM(r.paid_reduction) FROM drawer_refunds r WHERE r.invoice_id = i.id), 0)
+        - COALESCE((
+            SELECT SUM(t.amount) FROM treasury_transactions t
+            WHERE t.type = 'deposit'
+              AND (
+                (t.invoice_id IS NOT NULL AND t.invoice_id = i.id)
+                OR (t.invoice_id IS NULL AND COALESCE(i.invoice_number,'') <> ''
+                    AND t.notes LIKE 'تحصيل آجل فاتورة ' || i.invoice_number || ' %')
+              )
+          ), 0)
+      ), 0) as v
+      FROM invoices i
+      WHERE i.type = 'sales'
+        AND (i.payment_source IS NULL OR i.payment_source = 'cash_register')
+        AND (i.payment_method IS NULL OR i.payment_method IN ('cash','credit'))
+        AND ${periodCond("i.date", start, dateStr)}
+    `, p()))?.v || 0);
+
+    // 2) مشتريات مدفوعة من الدرج — نفس منطق المبيعات:
+    //   نرجّع المبلغ وقت الشراء فقط، وسدادات الآجل بتتعرض كخطوة منفصلة تحت
+    //   (لو اتحسبت هنا وكمان في حركات الخزينة كانت هتتخصم مرتين)
+    const purchasesOut = Number((await dbGet(`
+      SELECT COALESCE(SUM(
+        i.paid
+        + COALESCE((SELECT SUM(r.paid_reduction) FROM drawer_refunds r WHERE r.invoice_id = i.id), 0)
+        - COALESCE((
+            SELECT SUM(t.amount) FROM treasury_transactions t
+            WHERE t.type = 'withdraw'
+              AND (
+                (t.invoice_id IS NOT NULL AND t.invoice_id = i.id)
+                OR (t.invoice_id IS NULL AND COALESCE(i.invoice_number,'') <> ''
+                    AND t.notes LIKE 'سداد مشتريات فاتورة ' || i.invoice_number || ' %')
+              )
+          ), 0)
+      ), 0) as v
+      FROM invoices i
+      WHERE i.type = 'purchases'
+        AND (i.payment_source IS NULL OR i.payment_source = 'cash_register')
+        AND ${periodCond("i.date", start, dateStr)}
+    `, p()))?.v || 0);
+
+    // 3) مصروفات من الدرج
+    const expensesOut = Number((await dbGet(`
+      SELECT COALESCE(SUM(amount), 0) as v FROM expenses
+      WHERE (payment_source IS NULL OR payment_source = 'cash_register')
+        AND ${periodCond("date", start, dateStr)}
+    `, p()))?.v || 0);
+
+    // 4) حركات الخزينة (إيداع/سحب/تحويل + تحصيل الآجل)
+    const txs = await dbAll(
+      `SELECT t.type, t.amount, t.source, t.destination, t.notes, t.invoice_id, i.type AS inv_type
+       FROM treasury_transactions t
+       LEFT JOIN invoices i ON i.id = t.invoice_id
+       WHERE ${periodCond("substr(t.date,1,10)", start, dateStr)}`,
+      p()
+    );
+    let collectionsIn = 0, depositsIn = 0, withdrawalsOut = 0, transfersOut = 0, purchaseCollectionsOut = 0;
+    for (const t of txs as any[]) {
+      const amt = Number(t.amount || 0);
+      // حركة باتجاه عكس حساب الفاتورة = سجل تدقيق بس (paid اتغيّر أصلًا)
+      if (
+        t.invoice_id != null &&
+        ((t.inv_type === "sales" && t.type === "withdraw") ||
+          (t.inv_type === "purchases" && t.type === "deposit"))
+      ) {
+        continue;
+      }
+      const notes = String(t.notes || "");
+      const isSalesCollection =
+        t.type === "deposit" && (!!t.invoice_id || notes.startsWith("تحصيل آجل"));
+      const isPurchaseCollection =
+        t.type === "withdraw" && (!!t.invoice_id || notes.startsWith("سداد مشتريات فاتورة"));
+      if (t.type === "deposit") {
+        if (t.destination === "cash_register") {
+          if (isSalesCollection) collectionsIn += amt; else depositsIn += amt;
+        }
+      } else if (t.type === "withdraw") {
+        if (t.source === "cash_register") {
+          // سداد مشتريات آجل بيتحسب لوحده (مدفوع وقت الشراء + سداد لاحق)
+          if (isPurchaseCollection) purchaseCollectionsOut += amt; else withdrawalsOut += amt;
+        }
+      } else if (t.type === "transfer") {
+        if (t.destination === "cash_register") depositsIn += amt;
+        if (t.source === "cash_register") transfersOut += amt;
+      }
+    }
+
+    // 5) مرتجعات مبيعات (فلوس خرجت من الدرج) — يوم المرتجع
+    const salesRefundsOut = Number((await dbGet(`
+      SELECT COALESCE(SUM(refund_amount), 0) as v FROM drawer_refunds
+      WHERE invoice_type = 'sales'
+        AND (payment_source IS NULL OR payment_source = 'cash_register')
+        AND (payment_method IS NULL OR payment_method IN ('cash','credit'))
+        AND ${periodCond("refund_date", start, dateStr)}
+    `, p()))?.v || 0);
+
+    // 6) مرتجعات مشتريات (فلوس رجعت للدرج)
+    const purchaseRefundsIn = Number((await dbGet(`
+      SELECT COALESCE(SUM(refund_amount), 0) as v FROM drawer_refunds
+      WHERE invoice_type = 'purchases'
+        AND (payment_source IS NULL OR payment_source = 'cash_register')
+        AND ${periodCond("refund_date", start, dateStr)}
+    `, p()))?.v || 0);
+
+    // معلومة فقط: مدفوعات بالبطاقات (مش بتدخل الدرج أصلًا)
+    const cardExcluded = Number((await dbGet(`
+      SELECT COALESCE(SUM(paid), 0) as v FROM invoices
+      WHERE type = 'sales'
+        AND (payment_source IS NULL OR payment_source = 'cash_register')
+        AND payment_method IN ('visa','instapay','vodafone')
+        AND ${periodCond("date", start, dateStr)}
+    `, p()))?.v || 0);
+
+    const movements = [
+      { key: "sales", label: "مبيعات كاش من الدرج", amount: +salesIn.toFixed(2) },
+      { key: "collections", label: "تحصيل آجل", amount: +collectionsIn.toFixed(2) },
+      { key: "deposits", label: "إيداع وتحويل وارد للدرج", amount: +depositsIn.toFixed(2) },
+      { key: "purchase_refunds", label: "مرتجع مشتريات (دخل للدرج)", amount: +purchaseRefundsIn.toFixed(2) },
+      { key: "purchases", label: "مشتريات مدفوعة من الدرج", amount: -(+purchasesOut.toFixed(2)) },
+      { key: "purchase_collections", label: "سداد مشتريات آجل", amount: -(+purchaseCollectionsOut.toFixed(2)) },
+      { key: "expenses", label: "مصروفات من الدرج", amount: -(+expensesOut.toFixed(2)) },
+      { key: "withdrawals", label: "سحوبات وتحويل صادر من الدرج", amount: -(+((withdrawalsOut + transfersOut)).toFixed(2)) },
+      { key: "sales_refunds", label: "مرتجع مبيعات (خرج من الدرج)", amount: -(+salesRefundsOut.toFixed(2)) },
+    ];
+    const expected = +(opening + movements.reduce((s, m) => s + m.amount, 0)).toFixed(2);
+
+    return {
+      date: dateStr,
+      opening,
+      openingFrom: start || null,
+      openingLabel: lastClosing ? `رصيد آخر تقفيلة (${lastClosing.date})` : "رصيد افتتاحي (من أول التشغيل)",
+      movements,
+      expected,
+      cardExcluded: +cardExcluded.toFixed(2),
+      lastClosing: lastClosing || null,
+      existingClosing: existingClosing || null,
+    };
+  };
+
+  // معاينة متوقع الصندوق ليوم محدد
+  app.get("/api/drawer/close-preview", requireDrawer, async (req, res) => {
+    try {
+      const dateStr = String(req.query.date || localDateStr());
+      if (!DATE_RE.test(dateStr)) return res.status(400).json({ error: "التاريخ غير صحيح (YYYY-MM-DD)" });
+      res.json(await computeDrawerPreview(dateStr));
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // حفظ تقفيل الصندوق (أو تعديل نفس اليوم)
+  app.post("/api/drawer/close", requireDrawer, async (req, res) => {
+    try {
+      const { date, counted, counted_json, note, user_name } = req.body;
+      const dateStr = String(date || "");
+      if (!DATE_RE.test(dateStr)) return res.status(400).json({ error: "التاريخ غير صحيح (YYYY-MM-DD)" });
+      const countedNum = Number(counted);
+      if (!isFinite(countedNum) || countedNum < 0) return res.status(400).json({ error: "المبلغ المعدود غير صحيح" });
+
+      const preview = await computeDrawerPreview(dateStr);
+      const expected = preview.expected;
+      const diff = +(countedNum - expected).toFixed(2);
+
+      await dbRun(
+        `INSERT INTO drawer_closings (date, counted, expected, diff, counted_json, note, created_by, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(date) DO UPDATE SET
+           counted = excluded.counted, expected = excluded.expected, diff = excluded.diff,
+           counted_json = excluded.counted_json, note = excluded.note,
+           created_by = excluded.created_by, created_at = excluded.created_at`,
+        [
+          dateStr, countedNum, expected, diff,
+          JSON.stringify(counted_json || {}),
+          String(note || ""),
+          String(user_name || (req as any).user?.name || ""),
+          new Date().toISOString(),
+        ]
+      );
+
+      const state = Math.abs(diff) < 0.01 ? "مطابق" : diff > 0 ? `زيادة ${diff.toFixed(2)}` : `عجز ${Math.abs(diff).toFixed(2)}`;
+      await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, 'تقفيل صندوق', ?)", [
+        new Date().toISOString(),
+        String(user_name || (req as any).user?.name || "الكاشير"),
+        `تقفيل صندوق ${dateStr}: المعدود ${countedNum.toFixed(2)} · المتوقع ${expected.toFixed(2)} · الفرق ${diff.toFixed(2)} (${state})`,
+      ]);
+
+      const saved = await dbGet("SELECT * FROM drawer_closings WHERE date = ?", [dateStr]);
+      res.json({ success: true, closing: saved, preview });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // سجل عمليات التقفيل
+  app.get("/api/drawer/closings", requireDrawer, async (req, res) => {
+    try {
+      const rows = await dbAll("SELECT * FROM drawer_closings ORDER BY date DESC LIMIT 120");
+      res.json({ closings: rows });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
     }
   });
 
@@ -4300,8 +6122,8 @@ async function startServer() {
       await dbRun("UPDATE invoices SET paid = ?, remaining = ? WHERE id = ?", [newPaid, newRemaining, id]);
       // إيداع في الخزنة/الدرج
       await dbRun(
-        "INSERT INTO treasury_transactions (type, amount, source, destination, date, notes, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ["deposit", pay, src, src, new Date().toISOString(), `تحصيل آجل فاتورة ${inv.invoice_number} — ${inv.customer_supplier_name || ""}`, user_name || "الكاشير"]
+        "INSERT INTO treasury_transactions (type, amount, source, destination, date, notes, created_by, invoice_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ["deposit", pay, src, src, new Date().toISOString(), `تحصيل آجل فاتورة ${inv.invoice_number} — ${inv.customer_supplier_name || ""}`, user_name || "الكاشير", id]
       );
       await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, 'تحصيل آجل', ?)", [
         new Date().toISOString(),
@@ -4402,7 +6224,7 @@ async function startServer() {
         const acc = ensure(e.tamween_customer_id ?? null, e.customer_name, "", "");
         acc.ledger_entries.push(e);
         const amt = Number(e.amount || 0);
-        if (e.type === "opening_debit") acc.ledger_net += amt;
+        if (e.type === "opening_debit" || e.type === "refund") acc.ledger_net += amt;
         else acc.ledger_net -= amt; // opening_credit أو payment
         const d = String(e.created_at || "").slice(0, 10);
         if (!acc.last_activity || d > acc.last_activity) acc.last_activity = d;
@@ -4448,10 +6270,10 @@ async function startServer() {
   // تسجيل حركة في دفتر الحسابات (رصيد افتتاحي / سداد الدفتر القديم)
   app.post("/api/accounts/ledger", async (req, res) => {
     try {
-      const { tamween_customer_id, customer_name, type, amount, note, user_name } = req.body;
+      const { tamween_customer_id, customer_name, type, amount, note, user_name, payment_source } = req.body;
       const normName = (s: any) => String(s || "").trim();
       const amt = Number(amount);
-      if (!["opening_debit", "opening_credit", "payment"].includes(type)) {
+      if (!["opening_debit", "opening_credit", "payment", "refund"].includes(type)) {
         return res.status(400).json({ error: "نوع حركة الدفتر غير صحيح" });
       }
       if (!(amt > 0)) return res.status(400).json({ error: "لازم تكتب مبلغ أكبر من صفر" });
@@ -4464,16 +6286,47 @@ async function startServer() {
       }
       if (!name) return res.status(400).json({ error: "لازم تختار الزبون" });
 
-      // سداد على الدفتر: ميقدرش يزيد عن رصيد الدفتر
-      if (type === "payment") {
+      const srcPay = payment_source === "cash_register" ? "cash_register" : "main_safe";
+
+      // سداد (فلوس داخلة) وردّ فلوس (فلوس خارجة): ميقدروش يعدّوا رصيد الزبون الكلي
+      // (فواتيره المفتوحة + دفاته القديمة) — علشان ما نصرفش فلوس مش ليه
+      if (type === "payment" || type === "refund") {
         const rows = await dbAll(
-          "SELECT type, amount, tamween_customer_id, customer_name FROM customer_ledger WHERE (tamween_customer_id IS NOT NULL AND tamween_customer_id = ?) OR (tamween_customer_id IS NULL AND TRIM(COALESCE(customer_name,'')) = ?)",
+          "SELECT type, amount FROM customer_ledger WHERE (tamween_customer_id IS NOT NULL AND tamween_customer_id = ?) OR (tamween_customer_id IS NULL AND TRIM(COALESCE(customer_name,'')) = ?)",
           [tamween_customer_id ?? -1, name]
         );
-        let net = 0;
-        for (const r of rows) net += r.type === "opening_debit" ? Number(r.amount || 0) : -Number(r.amount || 0);
-        if (amt > net + 0.001) {
-          return res.status(400).json({ error: `المبلغ أكبر من رصيد الدفتر (${net.toFixed(2)} جنيه)` });
+        let ledgerNet = 0;
+        for (const r of rows) {
+          ledgerNet += r.type === "opening_debit" || r.type === "refund" ? Number(r.amount || 0) : -Number(r.amount || 0);
+        }
+        const inv: any = await dbGet(
+          `SELECT COALESCE(SUM(CASE WHEN remaining > 0 THEN remaining ELSE 0 END),0) AS debt,
+                  COALESCE(SUM(CASE WHEN remaining < 0 THEN -remaining ELSE 0 END),0) AS credit
+           FROM invoices
+           WHERE type = 'sales' AND remaining != 0 AND (status IS NULL OR status != 'returned')
+             AND ((tamween_customer_id IS NOT NULL AND tamween_customer_id = ?)
+               OR (tamween_customer_id IS NULL AND TRIM(COALESCE(customer_supplier_name,'')) = ?))`,
+          [tamween_customer_id ?? -1, name]
+        );
+        const balance = Number(inv?.debt || 0) - Number(inv?.credit || 0) + ledgerNet;
+
+        if (type === "payment" && amt > balance + 0.001) {
+          return res.status(400).json({ error: `المبلغ أكبر من رصيد الزبون (${balance.toFixed(2)} جنيه)` });
+        }
+        if (type === "refund" && amt > -balance + 0.001) {
+          return res.status(400).json({ error: `المبلغ أكبر من المحفوظ لصالح الزبون (${(-balance).toFixed(2)} جنيه)` });
+        }
+
+        // ردّ فلوس = خروج من الخزنة/الدرج → لازم الرصيد يكفّى
+        if (type === "refund") {
+          const bal = await computeBalances();
+          const avail = srcPay === "cash_register" ? bal.cash_register : bal.main_safe;
+          if (amt > avail + 0.001) {
+            const srcLabel = srcPay === "cash_register" ? "الدرج (الكاشير)" : "الخزينة الرئيسية";
+            return res.status(400).json({
+              error: `الرصيد غير كافٍ في ${srcLabel} — المتوفر ${avail.toFixed(2)} ج.م والمطلوب ${amt.toFixed(2)} ج.م`,
+            });
+          }
         }
       }
 
@@ -4481,9 +6334,27 @@ async function startServer() {
         "INSERT INTO customer_ledger (tamween_customer_id, customer_name, type, amount, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
         [tamween_customer_id ?? null, name, type, amt, String(note || ""), user_name || "النظام", new Date().toISOString()]
       );
+      // سداد = فلوس داخلة للخزنة/الدرج • ردّ فلوس = فلوس خارجة منها
+      if (type === "payment" || type === "refund") {
+        await dbRun(
+          "INSERT INTO treasury_transactions (type, amount, source, destination, date, notes, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          [
+            type === "payment" ? "deposit" : "withdraw",
+            amt,
+            srcPay,
+            srcPay,
+            new Date().toISOString(),
+            type === "payment"
+              ? `سداد دفعة من الزبون ${name}${note ? ` — ${note}` : ""}`
+              : `ردّ فلوس للزبون ${name}${note ? ` — ${note}` : ""}`,
+            user_name || "النظام",
+          ]
+        );
+      }
       const label =
         type === "opening_debit" ? "رصيد افتتاحي (دين قديم)"
         : type === "opening_credit" ? "رصيد افتتاحي (فلوس معي عنده)"
+        : type === "refund" ? "ردّ فلوس للزبون"
         : "سداد على الدفتر القديم";
       await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, ?, ?)", [
         new Date().toISOString(),
@@ -4503,7 +6374,7 @@ async function startServer() {
       const { customer_id, delta, user_name, note } = req.body;
       const d = Number(delta);
       if (!d) return res.status(400).json({ error: "لازم تكتب مبلغ غير صفر" });
-      const c = await dbGet("SELECT id, name, card_value FROM tamween_customers WHERE id = ?", [customer_id]);
+      const c = await dbGet("SELECT id, name, secret_number, card_value FROM tamween_customers WHERE id = ?", [customer_id]);
       if (!c) return res.status(404).json({ error: "الزبون غير موجود" });
       const current = Number(c.card_value || 0);
       const next = current + d;
@@ -4511,6 +6382,20 @@ async function startServer() {
         return res.status(400).json({ error: `رصيد البطاقة مش هيوصل للسالب (المتاح ${current.toFixed(2)} جنيه)` });
       }
       await dbRun("UPDATE tamween_customers SET card_value = ? WHERE id = ?", [+next.toFixed(2), customer_id]);
+      // دفتر البطاقات: لازم يكون فيه سطر شحن مطابق — غير كده باقي الدفتر = صفر والصرف بيعتبرها كارت جديد ويتضاعف
+      await dbRun(
+        `INSERT INTO tamween_card_ledger (customer_id, secret_number, month, type, amount, note, created_by, created_at)
+         VALUES (?, ?, ?, 'شحن', ?, ?, ?, ?)`,
+        [
+          customer_id,
+          String(c.secret_number || "").trim(),
+          new Date().toISOString().slice(0, 7),
+          d,
+          d > 0 ? "زيادة رصيد بطاقة (تسوية)" : "خصم رصيد بطاقة (تسوية)",
+          user_name || "النظام",
+          new Date().toISOString(),
+        ]
+      );
       await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, ?, ?)", [
         new Date().toISOString(),
         user_name || "النظام",
@@ -4518,6 +6403,264 @@ async function startServer() {
         `${c.name}: ${d > 0 ? "+" : ""}${d.toFixed(2)} جنيه (الرصيد ${current.toFixed(2)} ← ${next.toFixed(2)})${note ? ` — ملاحظة: ${note}` : ""}`,
       ]);
       res.json({ success: true, card_value: +next.toFixed(2) });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ==================== حسابات الموردين والديون ====================
+  // كشف موردين: فواتير المشتريات الآجلة المفتوحة + دفتر الرصيد الافتتاحي/السداد
+  app.get("/api/accounts/suppliers", async (req, res) => {
+    try {
+      const invoices = await dbAll(
+        `SELECT id, invoice_number, date, customer_supplier_name, supplier_id,
+                total, paid, remaining, payment_source
+         FROM invoices
+         WHERE type = 'purchases' AND remaining != 0 AND (status IS NULL OR status != 'returned')
+         ORDER BY date DESC, id DESC`
+      );
+      const ledger = await dbAll("SELECT * FROM supplier_ledger ORDER BY id DESC");
+      const suppliers = await dbAll("SELECT id, name, phone FROM suppliers ORDER BY name COLLATE NOCASE");
+
+      const rows: any[] = [];
+      const byId = new Map<number, any>();
+      const byName = new Map<string, any>();
+      const norm = (s: any) => String(s || "").trim();
+
+      const ensure = (sid: number | null, name: string) => {
+        if (sid != null) {
+          const hit = byId.get(sid);
+          if (hit) return hit;
+        }
+        const nm = norm(name);
+        if (nm) {
+          const hit = byName.get(nm);
+          if (hit) {
+            if (sid != null && !hit.supplier_id) { hit.supplier_id = sid; byId.set(sid, hit); }
+            return hit;
+          }
+        }
+        const acc = {
+          key: sid != null ? `s:${sid}` : `n:${nm || "?"}${rows.length}`,
+          supplier_id: sid,
+          name: nm || (sid != null ? `مورد #${sid}` : "بدون اسم"),
+          phone: "",
+          open_invoices: [] as any[],
+          ledger: [] as any[],
+          invoice_debt: 0,
+          ledger_net: 0,
+          last_activity: "",
+        };
+        rows.push(acc);
+        if (sid != null) byId.set(sid, acc);
+        if (nm) byName.set(nm, acc);
+        return acc;
+      };
+
+      for (const s of suppliers) {
+        const acc = ensure(s.id, s.name);
+        acc.phone = norm(s.phone);
+      }
+      for (const inv of invoices) {
+        const acc = ensure(inv.supplier_id ?? null, inv.customer_supplier_name);
+        acc.open_invoices.push(inv);
+        const rem = Number(inv.remaining || 0);
+        // المورّد ليه (عليه لنا): فواتير المشتريات الآجلة → دين على المورّد/إلتزام علينا؟
+        // نفس منطق الزبائن: remaining > 0 في مشتريات = إحنا مدينون للمورّد (فلوس علينا)
+        acc.invoice_debt += rem;
+        if (!acc.last_activity || String(inv.date) > acc.last_activity) acc.last_activity = String(inv.date || "");
+      }
+      for (const e of ledger) {
+        const acc = ensure(e.supplier_id ?? null, e.supplier_name);
+        acc.ledger.push(e);
+        const amt = Number(e.amount || 0);
+        if (e.type === "opening_debit") acc.ledger_net += amt;
+        else acc.ledger_net -= amt;
+        const d = String(e.created_at || "").slice(0, 10);
+        if (!acc.last_activity || d > acc.last_activity) acc.last_activity = d;
+      }
+
+      const out = rows.map((a) => ({
+        ...a,
+        // > 0 = فلوس علينا للمورّد · < 0 = مقدمات/رصيد عندنا
+        balance: +(a.invoice_debt + a.ledger_net).toFixed(2),
+      }));
+      let supplier_debt = 0, supplier_credit = 0, suppliers_count = 0;
+      for (const r of out) {
+        if (r.balance > 0) { supplier_debt += r.balance; suppliers_count++; }
+        else if (r.balance < 0) supplier_credit += -r.balance;
+      }
+      res.json({
+        suppliers: out,
+        summary: {
+          supplier_debt: +supplier_debt.toFixed(2),
+          supplier_credit: +supplier_credit.toFixed(2),
+          suppliers_count,
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // تسجيل حركة في دفتر المورّد (رصيد افتتاحي / سداد) — السداد بيخصم من الخزنة
+  app.post("/api/accounts/supplier-ledger", async (req, res) => {
+    try {
+      const { supplier_id, supplier_name, type, amount, note, user_name, payment_source } = req.body;
+      const normName = (s: any) => String(s || "").trim();
+      const amt = Number(amount);
+      if (!["opening_debit", "opening_credit", "payment", "refund"].includes(type)) {
+        return res.status(400).json({ error: "نوع حركة الدفتر غير صحيح" });
+      }
+      if (!(amt > 0)) return res.status(400).json({ error: "لازم تكتب مبلغ أكبر من صفر" });
+
+      let sid: number | null = supplier_id ?? null;
+      let name = normName(supplier_name);
+      if (sid != null) {
+        const s = await dbGet("SELECT id, name FROM suppliers WHERE id = ?", [sid]);
+        if (s) name = normName(s.name) || name;
+      }
+      if (!name) return res.status(400).json({ error: "لازم تختار المورّد" });
+      if (sid == null) {
+        const hit: any = await dbGet("SELECT id FROM suppliers WHERE TRIM(name) = ?", [name]);
+        if (hit) sid = Number(hit.id);
+      }
+
+      // سداد: ميقدرش يزيد عن رصيد المورّد (فلوس علينا فقط)
+      if (type === "payment") {
+        const rowsP = await dbAll(
+          "SELECT type, amount FROM supplier_ledger WHERE (supplier_id IS NOT NULL AND supplier_id = ?) OR (supplier_id IS NULL AND TRIM(COALESCE(supplier_name,'')) = ?)",
+          [sid ?? -1, name]
+        );
+        let net = 0;
+        for (const r of rowsP) net += r.type === "opening_debit" ? Number(r.amount || 0) : -Number(r.amount || 0);
+        const invRows = await dbAll(
+          `SELECT remaining FROM invoices WHERE type = 'purchases' AND remaining > 0
+             AND (status IS NULL OR status != 'returned')
+             AND TRIM(COALESCE(customer_supplier_name,'')) = ?`,
+          [name]
+        );
+        let invDebt = 0;
+        for (const r of invRows) invDebt += Number(r.remaining || 0);
+        const totalOwed = net + invDebt;
+        if (amt > totalOwed + 0.001) {
+          return res.status(400).json({ error: `المبلغ أكبر من فلوس المورّد (${totalOwed.toFixed(2)} جنيه)` });
+        }
+        // سداد = خروج من الخزنة → لازم الرصيد يكفّى (ممنوع الخزينة تروح بالسالب)
+        const balSup = await computeBalances();
+        const srcCheck = payment_source === "cash_register" ? "cash_register" : "main_safe";
+        const availSup = srcCheck === "cash_register" ? balSup.cash_register : balSup.main_safe;
+        if (amt > availSup + 0.001) {
+          const srcLabel = srcCheck === "cash_register" ? "الدرج (الكاشير)" : "الخزينة الرئيسية";
+          return res.status(400).json({
+            error: `الرصيد غير كافٍ في ${srcLabel} — المتوفر ${availSup.toFixed(2)} ج.م والمطلوب ${amt.toFixed(2)} ج.م`,
+          });
+        }
+      }
+
+      // ردّ مقدّم من المورّد (فلوس راجعة لينا) = إيداع في الخزنة → ميقدرش يتجاوز المحفوظ عندنا
+      if (type === "refund") {
+        const rowsR = await dbAll(
+          "SELECT type, amount FROM supplier_ledger WHERE (supplier_id IS NOT NULL AND supplier_id = ?) OR (supplier_id IS NULL AND TRIM(COALESCE(supplier_name,'')) = ?)",
+          [sid ?? -1, name]
+        );
+        let netR = 0;
+        for (const r of rowsR) netR += r.type === "opening_debit" || r.type === "refund" ? Number(r.amount || 0) : -Number(r.amount || 0);
+        const invRowsR = await dbAll(
+          `SELECT remaining FROM invoices WHERE type = 'purchases' AND remaining > 0
+             AND (status IS NULL OR status != 'returned')
+             AND TRIM(COALESCE(customer_supplier_name,'')) = ?`,
+          [name]
+        );
+        let invDebtR = 0;
+        for (const r of invRowsR) invDebtR += Number(r.remaining || 0);
+        const availableR = -(netR + invDebtR);
+        if (availableR <= 0.001) {
+          return res.status(400).json({ error: `مفيش محفوظ للمورّد ${name} تقدر ترجعه.` });
+        }
+        if (amt > availableR + 0.001) {
+          return res.status(400).json({ error: `المبلغ أكبر من المحفوظ عند المورّد (${availableR.toFixed(2)} جنيه)` });
+        }
+      }
+
+      await dbRun(
+        "INSERT INTO supplier_ledger (supplier_id, supplier_name, type, amount, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [sid, name, type, amt, String(note || ""), user_name || "النظام", new Date().toISOString()]
+      );
+      // سداد للمورّد = خروج فلوس من الخزنة/الدرج • ردّ المقدّم = فلوس داخلة
+      if (type === "payment" || type === "refund") {
+        const src = payment_source === "cash_register" ? "cash_register" : "main_safe";
+        await dbRun(
+          "INSERT INTO treasury_transactions (type, amount, source, destination, date, notes, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          [
+            type === "payment" ? "withdraw" : "deposit",
+            amt,
+            src,
+            src,
+            new Date().toISOString(),
+            type === "payment"
+              ? `سداد دفعة للمورّد ${name}${note ? ` — ${note}` : ""}`
+              : `ردّ مقدّم من المورّد ${name}${note ? ` — ${note}` : ""}`,
+            user_name || "النظام",
+          ]
+        );
+      }
+      const label =
+        type === "opening_debit" ? "رصيد افتتاحي (فلوس علينا للمورّد)"
+        : type === "opening_credit" ? "رصيد افتتاحي (مقدمات/رصيد عندنا)"
+        : type === "refund" ? "ردّ مقدّم من المورّد"
+        : "سداد للمورّد";
+      await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, ?, ?)", [
+        new Date().toISOString(),
+        user_name || "النظام",
+        "حركة حساب مورّد",
+        `${label}: ${amt.toFixed(2)} جنيه — ${name}${note ? ` — ملاحظة: ${note}` : ""}`,
+      ]);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // سداد فاتورة مشتريات آجلة لحساب مورّد — بيخصم من الخزنة/الدرج فوراً
+  app.post("/api/purchases/:id/collect", async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const { amount, payment_source, user_name } = req.body;
+      const pay = Number(amount);
+      if (!(pay > 0)) return res.status(400).json({ error: "المبلغ غير صحيح" });
+      const inv: any = await dbGet(
+        "SELECT * FROM invoices WHERE id = ? AND type = 'purchases' AND remaining > 0 AND (status IS NULL OR status != 'returned')",
+        [id]
+      );
+      if (!inv) return res.status(404).json({ error: "فاتورة مشتريات آجلة غير موجودة" });
+      if (pay > Number(inv.remaining) + 0.001) {
+        return res.status(400).json({ error: `المبلغ أكبر من المتبقي (${Number(inv.remaining).toFixed(2)} ج.م)` });
+      }
+      const newRemaining = Math.max(0, Number(inv.remaining) - pay);
+      const newPaid = Number(inv.paid || 0) + pay;
+      const src = payment_source === "cash_register" ? "cash_register" : "main_safe";
+      // لازم يكون فيه فلوس كافية في المصدر قبل ما نخصم — ممنوع الخزينة تروح بالسالب
+      const bal = await computeBalances();
+      const avail = src === "cash_register" ? bal.cash_register : bal.main_safe;
+      if (pay > avail + 0.001) {
+        const srcLabel = src === "cash_register" ? "الدرج (الكاشير)" : "الخزينة الرئيسية";
+        return res.status(400).json({
+          error: `الرصيد غير كافٍ في ${srcLabel} — المتوفر ${avail.toFixed(2)} ج.م والمطلوب ${pay.toFixed(2)} ج.م`,
+        });
+      }
+      await dbRun("UPDATE invoices SET paid = ?, remaining = ? WHERE id = ?", [newPaid, newRemaining, id]);
+      await dbRun(
+        "INSERT INTO treasury_transactions (type, amount, source, destination, date, notes, created_by, invoice_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ["withdraw", pay, src, src, new Date().toISOString(), `سداد مشتريات فاتورة ${inv.invoice_number} — ${inv.customer_supplier_name || ""}`, user_name || "الكاشير", id]
+      );
+      await dbRun("INSERT INTO logs (timestamp, user, action, details) VALUES (?, ?, ?, ?)", [
+        new Date().toISOString(),
+        user_name || "الكاشير",
+        "سداد مشتريات آجلة",
+        `سداد ${pay.toFixed(2)} ج.م من فاتورة مشتريات ${inv.invoice_number} للمورّد ${inv.customer_supplier_name || "—"} — المتبقي: ${newRemaining.toFixed(2)} ج.م`,
+      ]);
+      res.json({ success: true, remaining: newRemaining, paid: newPaid });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -4588,6 +6731,7 @@ async function startServer() {
         invoiceNumber: row.invoice_number || "",
         date: row.date || "",
         activeTabIndex: row.active_tab_index || 0,
+        withdrawalChoice: row.withdrawal_choice === "part" || row.withdrawal_choice === "later" ? row.withdrawal_choice : "now",
       });
     } catch (e) {
       res.status(500).json({ error: e.message });
@@ -4598,8 +6742,8 @@ async function startServer() {
     try {
       const b = req.body;
       await dbRun(
-        `INSERT OR REPLACE INTO active_carts (id, cart_json, customer_name, secret_number, sale_type, payment_method, payment_source, discount, tamween_cards_json, bread_points, bonus, paid, invoice_number, date, active_tab_index)
-         VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT OR REPLACE INTO active_carts (id, cart_json, customer_name, secret_number, sale_type, payment_method, payment_source, discount, tamween_cards_json, bread_points, bonus, paid, invoice_number, date, active_tab_index, withdrawal_choice)
+         VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           JSON.stringify(b.cart ?? []),
           b.customerName ?? "",
@@ -4615,6 +6759,7 @@ async function startServer() {
           b.invoiceNumber ?? "",
           b.date ?? "",
           b.activeTabIndex ?? 0,
+          b.withdrawalChoice === "part" || b.withdrawalChoice === "later" ? b.withdrawalChoice : "now",
         ]
       );
       res.json({ success: true });

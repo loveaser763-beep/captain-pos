@@ -8,9 +8,10 @@ interface UnifiedPrintButtonProps {
   title?: string;
   variant?: "primary" | "ghost";
   printLayout?: "receipt" | "wide"; // wide = نوافذ المنظومة الواسعة بنفس تنظيم الشاشة
+  compact?: boolean; // نسخة مضغوطة لشريط علوي ضيّق (أعلى الشاشة)
 }
 
-export default function UnifiedPrintButton({ printableId, thermalId, title = "طباعة", variant = "ghost", printLayout = "receipt" }: UnifiedPrintButtonProps) {
+export default function UnifiedPrintButton({ printableId, thermalId, title = "طباعة", variant = "ghost", printLayout = "receipt", compact = false }: UnifiedPrintButtonProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -61,14 +62,21 @@ export default function UnifiedPrintButton({ printableId, thermalId, title = "ط
     setTimeout(cleanup, 2000);
   };
 
+  const resolveThermalId = () => {
+    if (thermalId) return thermalId;
+    const fallback = `${printableId}-thermal`;
+    return document.getElementById(fallback) ? fallback : printableId;
+  };
+
   const printThermalFujitsu = () => {
     setOpen(false);
+    const targetId = resolveThermalId();
     try {
-      const req = new CustomEvent("thermal-print-request", { detail: { id: thermalId || printableId }, cancelable: true });
+      const req = new CustomEvent("thermal-print-request", { detail: { id: targetId }, cancelable: true });
       if (window.dispatchEvent(req) === false) return;
     } catch {}
     try {
-      const el = document.getElementById(thermalId || printableId);
+      const el = document.getElementById(targetId);
       if (!el) throw new Error("receipt-missing");
       // نفس خلطة التقفيلة المجربة على نفس الطابعة: iframe بمقاس ثابت وهوامش محسوبة
       // wide = نوافذ المنظومة بنفس تنظيم الشاشة (شبكات + مربعات بحدود بدل الخلفيات)
@@ -153,7 +161,7 @@ export default function UnifiedPrintButton({ printableId, thermalId, title = "ط
     <div ref={ref} className="relative inline-block">
       <button
         onClick={() => setOpen(v => !v)}
-        className={`h-9 px-3 flex items-center gap-1.5 border rounded-lg text-xs font-black transition-all cursor-pointer ${baseCls}`}
+        className={`${compact ? "h-7 px-2.5" : "h-9 px-3"} flex items-center gap-1.5 border rounded-lg text-xs font-black transition-all cursor-pointer ${baseCls}`}
         title="اختر نوع الطباعة"
       >
         <Printer size={14} strokeWidth={2} />

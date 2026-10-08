@@ -493,3 +493,6 @@ table { color: var(--text-primary, #E8ECF4) !important; }thead { background: var
   body.printing-isolate .lux-drawer:has(.print-target) { display: block !important; }
   @page { margin: 1mm; size: A4; }
 }
+/* حركة هادية للنوافذ (حسابات الزبائن) */
+@keyframes lux-pop { from { opacity: 0; transform: translateY(10px) scale(0.985); } to { opacity: 1; transform: none; } }
+.lux-pop { animation: lux-pop 0.18s ease-out; }

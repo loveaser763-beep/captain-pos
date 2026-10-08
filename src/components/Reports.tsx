@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useMemo } from "react";
 import {
   BarChart3,
   Search,
@@ -42,6 +42,25 @@ interface Expense {
   notes: string;
 }
 
+export interface ExpenseCategory {
+  value: string;
+  label: string;
+}
+
+// التصنيفات الافتراضية — تشتغل لو مفيش قائمة محفوظة لسه على السيرفر
+export const DEFAULT_EXPENSE_CATEGORIES: ExpenseCategory[] = [
+  { value: "صيانة", label: "صيانة عامة" },
+  { value: "شراء جهاز", label: "شراء معدات" },
+  { value: "بناء", label: "تجهيزات المتجر" },
+  { value: "برمجيات ورخص", label: "تراخيص وبرامج" },
+  { value: "كهرباء ومرافق", label: "فواتير ومرافق" },
+  { value: "رواتب", label: "رواتب وأجور" },
+  { value: "أخرى", label: "مصروفات أخرى" },
+];
+
+const ADD_CATEGORY = "__add_category__";
+const RENAME_CATEGORY = "__rename_category__";
+
 export default function Reports({ currentUser }: ReportsProps = {}) {
   const [activeTab, setActiveTab] = useState<"financial_status" | "partners_ledger" | "expenses_manager" | "sales_charts">("financial_status");
   const [reportType, setReportType] = useState<"all" | "sales" | "purchases" | "profit" | "stock" | "expenses">("all");
@@ -69,9 +88,6 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [data, setData] = useState<any>(null);
-  // بند منظومة التموين (مستقل — فواتير الكارت فقط tamween_discount > 0)
-  const [tamweenReport, setTamweenReport] = useState<any>(null);
-  const [tamweenLoading, setTamweenLoading] = useState(false);
 
   // Partners & Expenses CRUD states
   const [partners, setPartners] = useState<Partner[]>([]);
@@ -86,6 +102,35 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
   const [showExpenseModal, setShowExpenseModal] = useState(false);
   const [expenseForm, setExpenseForm] = useState({ id: 0, title: "", amount: 0, date: "", category: "صيانة", notes: "", payment_source: "cash_register" });
   const [expenseError, setExpenseError] = useState("");
+  const [expandedCat, setExpandedCat] = useState<string | null>(null);
+  const [expenseCategories, setExpenseCategories] = useState<ExpenseCategory[]>(DEFAULT_EXPENSE_CATEGORIES);
+  // نافذة إضافة/تغيير اسم تصنيف — بديل الـ prompt اللي مش بيشتغل جوّه Electron
+  const [catDialog, setCatDialog] = useState<{ mode: "add" | "rename"; name: string } | null>(null);
+  const [catDialogError, setCatDialogError] = useState("");
+  const [catDialogBusy, setCatDialogBusy] = useState(false);
+
+  // بنود المصروفات — كل تصنيف بند بمجموعه وتواريخه (مرتّب بالمجموع تنازلي)
+  const expenseGroups = useMemo(() => {
+    const map = new Map<string, { category: string; total: number; count: number; from: string; to: string; rows: Expense[] }>();
+    for (const e of expenses) {
+      const cat = String(e.category || "بدون تصنيف");
+      const g = map.get(cat) || { category: cat, total: 0, count: 0, from: "", to: "", rows: [] };
+      const amt = Number(e.amount || 0);
+      const d = String(e.date || "").slice(0, 10);
+      g.total += amt;
+      g.count += 1;
+      if (d) {
+        if (!g.from || d < g.from) g.from = d;
+        if (!g.to || d > g.to) g.to = d;
+      }
+      g.rows.push(e);
+      map.set(cat, g);
+    }
+    const list = Array.from(map.values());
+    for (const g of list) g.rows.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+    return list.sort((a, b) => b.total - a.total);
+  }, [expenses]);
+  const expensesTotal = expenseGroups.reduce((s, g) => s + g.total, 0);
 
   // Cashier Commission State
   const [cashierCommPercent, setCashierCommPercent] = useState<number>(0);
@@ -125,6 +170,13 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
         }
       })
       .catch(() => {});
+
+    authFetch("/api/expense-categories")
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => {
+        if (Array.isArray(d?.categories) && d.categories.length) setExpenseCategories(d.categories);
+      })
+      .catch(() => {});
   }, []);
 
   const fetchReport = async () => {
@@ -159,17 +211,6 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
       fetchReport();
     }
   }, [reportType, startDate, endDate]);
-
-  // جلب بند التموين مع نفس الفترة (منعزل عن باقي الأنشطة)
-  useEffect(() => {
-    if (!startDate || !endDate) return;
-    setTamweenLoading(true);
-    authFetch(`/api/reports/tamween?startDate=${startDate}&endDate=${endDate}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((t) => setTamweenReport(t))
-      .catch(() => setTamweenReport(null))
-      .finally(() => setTamweenLoading(false));
-  }, [startDate, endDate]);
 
   const setPreset = (type: "today" | "month" | "year") => {
     const today = new Date();
@@ -263,6 +304,82 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
     }
   };
 
+  const saveExpenseCategories = async (next: ExpenseCategory[], rename?: { from: string; to: string }) => {
+    const unique = next.filter((c, i) => next.findIndex(x => x.value === c.value) === i);
+    const res = await authFetch("/api/expense-categories", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ categories: unique, rename, user_name: logCreatorName }),
+    });
+    if (!res.ok) throw new Error("فشل حفظ تصنيفات المصروفات.");
+    setExpenseCategories(unique);
+  };
+
+  const handleCategoryChange = (v: string) => {
+    if (v === ADD_CATEGORY) {
+      setCatDialogError("");
+      setCatDialog({ mode: "add", name: "" });
+      return;
+    }
+    if (v === RENAME_CATEGORY) {
+      setCatDialogError("");
+      setCatDialog({ mode: "rename", name: expenseForm.category || "" });
+      return;
+    }
+    setExpenseForm({ ...expenseForm, category: v });
+  };
+
+  const submitCategoryDialog = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!catDialog || catDialogBusy) return;
+    const name = catDialog.name.trim();
+    if (!name) {
+      setCatDialogError("اكتب اسم التصنيف أولاً.");
+      return;
+    }
+    const current = expenseForm.category;
+
+    if (catDialog.mode === "add") {
+      if (expenseCategories.some((c) => c.value === name || c.label === name)) {
+        setCatDialogError(`التصنيف "${name}" موجود بالفعل.`);
+        return;
+      }
+      setCatDialogBusy(true);
+      try {
+        await saveExpenseCategories([...expenseCategories, { value: name, label: name }]);
+        setExpenseForm((f) => ({ ...f, category: name }));
+        setCatDialog(null);
+      } catch (err: any) {
+        setCatDialogError(err.message);
+      } finally {
+        setCatDialogBusy(false);
+      }
+      return;
+    }
+
+    if (!current) {
+      setCatDialogError("مفيش تصنيف مختار لتغيير اسمه.");
+      return;
+    }
+    if (name === current) {
+      setCatDialog(null);
+      return;
+    }
+    setCatDialogBusy(true);
+    try {
+      const next = expenseCategories.some((c) => c.value === current)
+        ? expenseCategories.map((c) => (c.value === current ? { value: name, label: name } : c))
+        : [...expenseCategories, { value: name, label: name }];
+      await saveExpenseCategories(next, { from: current, to: name });
+      setExpenseForm((f) => ({ ...f, category: name }));
+      setCatDialog(null);
+    } catch (err: any) {
+      setCatDialogError(err.message);
+    } finally {
+      setCatDialogBusy(false);
+    }
+  };
+
   const handleSaveExpense = async (e: React.FormEvent) => {
     e.preventDefault();
     setExpenseError("");
@@ -279,7 +396,14 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
           logCreator: logCreatorName
         })
       });
-      if (!response.ok) throw new Error("فشل تسجيل قيد المصروفات.");
+      if (!response.ok) {
+        let msg = "فشل تسجيل قيد المصروفات.";
+        try {
+          const data = await response.json();
+          if (data?.error) msg = data.error;
+        } catch {}
+        throw new Error(msg);
+      }
       setShowExpenseModal(false);
       setExpenseForm({ id: 0, title: "", amount: 0, date: new Date().toISOString().split("T")[0], category: "صيانة", notes: "" });
       fetchReport();
@@ -470,7 +594,7 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
               : "bg-[#b8bcb2] text-[#000000] hover:bg-[#c3c6bb]"
           }`}
         >
-          <span>المصروفات التشغيلية</span>
+          <span>المسحوبات والنثريات</span>
         </button>
         <button
           onClick={() => setActiveTab("sales_charts")}
@@ -580,7 +704,7 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
                 </div>
 
                 <div className="col-span-12 sm:col-span-6 lg:col-span-3 bg-[#c3c6bb] p-4 border border-[#222222] text-right">
-                  <span className="text-xs font-bold text-[#555555]">المصروفات التشغيلية</span>
+                  <span className="text-xs font-bold text-[#555555]">المسحوبات والنثريات</span>
                   <h4 className="text-xl font-black text-[#000000] mt-1">{((totalExpensesSum || 0)).toFixed(2)} ج.م</h4>
                   <p className="text-xs text-[#555555] font-bold mt-1">تكاليف التشغيل والخدمات</p>
                 </div>
@@ -592,41 +716,6 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
                   </h4>
                   <p className="text-xs text-[#b8bcb2] font-bold mt-1">عائد أرباح البضاعة الحر (أرباح التموين في بند مستقل)</p>
                 </div>
-              </div>
-
-              {/* منظومة التموين — بند مستقل (فواتير الكارت فقط tamween_discount > 0) */}
-              <div className="bg-[#c3c6bb] border border-[#222222] p-4 space-y-4">
-                <div className="border-b border-[#888888] pb-2 text-right flex items-center justify-between">
-                  <h3 className="font-extrabold text-sm text-[#000000]">منظومة التموين — حسابات معزولة (فواتير الكارت فقط)</h3>
-                  {tamweenLoading && <span className="text-[11px] font-bold text-[#555555]">جاري تجميع بند التموين...</span>}
-                </div>
-                {tamweenReport ? (
-                  <div className="grid grid-cols-12 gap-4">
-                    {[
-                      { label: "إجمالي مبيعات التموين", value: `${(tamweenReport.sales || 0).toFixed(2)} ج.م`, sub: `قيمة السلع قبل خصم الدعم (${(tamweenReport.disbursed || 0).toFixed(2)})`, bg: "#16a34a", fg: "#ffffff" },
-                      { label: "إجمالي الاستعاضات", value: `${(tamweenReport.replacements || 0).toFixed(2)} ج.م`, sub: `استعاضات ${tamweenReport.replacementsCount || 0}`, bg: "#e11d48", fg: "#ffffff" },
-                      { label: "إجمالي الدعم المنصرف", value: `${(tamweenReport.disbursed || 0).toFixed(2)} ج.م`, sub: `قيمة كارت مباع من الكاشير في ${tamweenReport.cardsUsed || 0} فاتورة`, bg: "#0e7490", fg: "#ffffff" },
-                      { label: "المتبقي من الاستعاضات", value: `${(tamweenReport.remaining || 0).toFixed(2)} ج.م`, sub: "الرصيد المتبقي", bg: "#d97706", fg: "#ffffff" },
-                      { label: "عدد البطاقات التموينية", value: `${tamweenReport.cardsUsed || 0} بطاقة`, sub: "فواتير فيها كارت تموين", bg: "#2563eb", fg: "#ffffff" },
-                      { label: "إجمالي نقاط الخبز", value: `${(tamweenReport.breadPoints || 0).toFixed(2)} ج.م`, sub: "المصروفة في الفترة", bg: "#92400e", fg: "#ffffff" },
-                      { label: "صافي ربح التموين الفعلي", value: `${(tamweenReport.profit || 0).toFixed(2)} ج.م`, sub: `مكاسب ${(tamweenReport.gains || 0).toFixed(2)} • خسائر ${(tamweenReport.losses || 0).toFixed(2)}`, bg: "#7c3aed", fg: "#ffffff" },
-                    ].map((c) => (
-                      <div
-                        key={c.label}
-                        className="col-span-12 sm:col-span-6 lg:col-span-4 p-4 border text-right cursor-default transition-all duration-200 hover:-translate-y-1"
-                        style={{ backgroundColor: c.bg, borderColor: c.bg, color: c.fg }}
-                        onMouseEnter={(e) => { (e.currentTarget as any).style.boxShadow = `0 0 22px ${c.bg}`; }}
-                        onMouseLeave={(e) => { (e.currentTarget as any).style.boxShadow = "none"; }}
-                      >
-                        <span className="text-xs font-black" style={{ color: c.fg }}>{c.label}</span>
-                        <h4 className="text-xl font-black mt-1" style={{ color: c.fg }}>{c.value}</h4>
-                        <p className="text-[11px] font-bold mt-1 opacity-90" style={{ color: c.fg }}>{c.sub}</p>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="p-6 text-center text-[#555555] font-bold text-xs">لا توجد بيانات تموينية في هذه الفترة</div>
-                )}
               </div>
 
               {/* Partners Calculations Grid */}
@@ -725,61 +814,6 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
                 </div>
               )}
 
-              {/* Data Table Section */}
-              <div className="bg-[#c3c6bb] border border-[#222222] p-4" id="reports-main-data-table-section">
-                <div className="border-b border-[#888888] pb-2 mb-3 text-right">
-                  <h3 className="font-extrabold text-xs text-[#000000]">السجلات المسرودة تفصيلياً</h3>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full text-right text-xs min-w-[850px] border-collapse">
-                    <thead>
-                      <tr className="bg-[#222222] text-[#c3c6bb] font-bold h-10">
-                        <th className="py-3 px-4 whitespace-nowrap">رقم المستند</th>
-                        <th className="py-3 px-4 text-center whitespace-nowrap min-w-[160px]">الطرف الثاني</th>
-                        <th className="py-3 px-4 text-center whitespace-nowrap">التاريخ</th>
-                        <th className="py-3 px-4 text-center whitespace-nowrap">النوع</th>
-                        <th className="py-3 px-4 text-center whitespace-nowrap">الخصم</th>
-                        <th className="py-3 px-4 text-center whitespace-nowrap">خصم التموين</th>
-                        <th className="py-3 px-4 text-center whitespace-nowrap">المصدر</th>
-                        <th className="py-3 px-4 text-left whitespace-nowrap">الصافي</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-[#888888]/40 text-[#000000] font-bold">
-                      {data?.invoices && data?.invoices.length > 0 ? (
-                        data?.invoices.map((inv: any) => (
-                          <tr key={inv.id} className="hover:bg-[#b8bcb2] transition-colors">
-                            <td className="py-3 px-4 font-mono whitespace-nowrap">{inv.invoice_number}</td>
-                            <td className="py-3 px-4 text-center min-w-[160px]">{inv.customer_supplier_name}</td>
-                            <td className="py-3 px-4 text-center font-mono whitespace-nowrap">{inv.date}</td>
-                            <td className="py-3 px-4 text-center whitespace-nowrap">
-                              <span className="bg-[#222222] text-[#c3c6bb] px-2.5 py-1 text-xs font-bold">
-                                {inv.type === "sales" ? "مبيعات" : "مشتريات"}
-                              </span>
-                            </td>
-                            <td className="py-3 px-4 text-center font-mono whitespace-nowrap">-{(inv.discount || 0).toFixed(2)} ج.م</td>
-                            <td className="py-3 px-4 text-center font-mono whitespace-nowrap">
-                              {inv.tamween_discount > 0 ? (
-                                <span className="text-orange-600 font-bold">{inv.tamween_discount.toFixed(2)} ج.م</span>
-                              ) : (
-                                <span className="text-gray-400">-</span>
-                              )}
-                            </td>
-                            <td className="py-3 px-4 text-center whitespace-nowrap">
-                              {inv.payment_source === "cash_register" ? "الكاشير" : "الخزنة"}
-                            </td>
-                            <td className="py-3 px-4 text-left font-black font-mono text-sm whitespace-nowrap">{(inv.total || 0).toFixed(2)} ج.م</td>
-                          </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td colSpan={8} className="py-8 text-center text-[#555555] font-bold">لا توجد سجلات متوفرة في هذه الفترة.</td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
             </motion.div>
           )}
 
@@ -900,7 +934,7 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
             >
               <div className="flex justify-between items-center bg-[#c3c6bb] p-4 border border-[#222222] text-right no-print">
                 <div>
-                  <h3 className="font-extrabold text-sm text-[#000000]">سجل المصروفات التشغيلية</h3>
+                  <h3 className="font-extrabold text-sm text-[#000000]">سجل المسحوبات والنثريات</h3>
                   <p className="text-xs text-[#555555] font-semibold mt-0.5">تسجيل متابعة تكاليف الصيانة والخدمات والرواتب</p>
                 </div>
                 <button
@@ -918,7 +952,94 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
                 </button>
               </div>
 
+              {/* بنود المصروفات — كل تصنيف بمجموعه وتواريخه */}
               <div className="bg-[#c3c6bb] border border-[#222222] p-4">
+                <div className="flex justify-between items-center mb-3">
+                  <div>
+                    <h4 className="font-extrabold text-sm text-[#000000]">بنود المسحوبات والنثريات</h4>
+                    <p className="text-xs text-[#555555] font-semibold mt-0.5">
+                      كل تصنيف بند بمجموعه وتواريخه — {expenseGroups.length} بند · الإجمالي {expensesTotal.toFixed(2)} ج.م
+                    </p>
+                  </div>
+                </div>
+
+                {expenseGroups.length > 0 ? (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+                      {expenseGroups.map((g) => {
+                        const isOpen = expandedCat === g.category;
+                        const pct = expensesTotal > 0 ? (g.total / expensesTotal) * 100 : 0;
+                        return (
+                          <button
+                            key={g.category}
+                            type="button"
+                            onClick={() => setExpandedCat(isOpen ? null : g.category)}
+                            className={`text-right p-3 border cursor-pointer transition-all ${
+                              isOpen ? "bg-[#222222] text-[#c3c6bb] border-[#222222]" : "bg-[#b8bcb2] hover:bg-[#aeb2a8] text-[#000000] border-[#888888]"
+                            }`}
+                          >
+                            <p className="text-xs font-extrabold truncate">{g.category}</p>
+                            <p className="text-lg font-black font-mono leading-tight mt-0.5">-{g.total.toFixed(2)}</p>
+                            <p className={`text-[11px] font-bold ${isOpen ? "text-[#c3c6bb]/80" : "text-[#555555]"}`}>
+                              {g.count} حركة · {g.from || "—"} {g.from && g.to && g.from !== g.to ? `→ ${g.to}` : ""}
+                            </p>
+                            <div className={`h-1.5 mt-1.5 ${isOpen ? "bg-[#c3c6bb]/25" : "bg-[#888888]/40"}`}>
+                              <div className="h-full bg-[#222222]" style={{ width: `${Math.max(2, Math.round(pct))}%` }} />
+                            </div>
+                            <p className={`text-[10px] font-black mt-1 ${isOpen ? "text-[#c3c6bb]" : "text-[#555555]"}`}>
+                              {pct.toFixed(1)}% من إجمالي المصروفات
+                            </p>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {expandedCat && (
+                      <div className="border border-[#222222] bg-[#b8bcb2]">
+                        <div className="bg-[#222222] text-[#c3c6bb] px-3 py-2 flex justify-between items-center">
+                          <p className="font-extrabold text-xs">
+                            {expandedCat} — {expenseGroups.find((g) => g.category === expandedCat)?.count} حركة من{" "}
+                            {expenseGroups.find((g) => g.category === expandedCat)?.from || "—"} إلى{" "}
+                            {expenseGroups.find((g) => g.category === expandedCat)?.to || "—"}
+                          </p>
+                          <p className="font-black text-xs font-mono">
+                            الإجمالي -{expenseGroups.find((g) => g.category === expandedCat)?.total.toFixed(2)} ج.م
+                          </p>
+                        </div>
+                        <div className="overflow-x-auto max-h-64 overflow-y-auto">
+                          <table className="w-full text-right text-xs border-collapse">
+                            <thead className="sticky top-0">
+                              <tr className="bg-[#888888]/50 text-[#000000] font-bold">
+                                <th className="py-2 px-3">العنوان</th>
+                                <th className="py-2 px-3 text-center">المبلغ</th>
+                                <th className="py-2 px-3 text-center">التاريخ</th>
+                                <th className="py-2 px-3 text-right">الملاحظات</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-[#888888]/40 text-[#000000] font-bold">
+                              {(expenseGroups.find((g) => g.category === expandedCat)?.rows || []).map((ex) => (
+                                <tr key={ex.id} className="hover:bg-[#aeb2a8] transition-colors">
+                                  <td className="py-2 px-3">{ex.title}</td>
+                                  <td className="py-2 px-3 text-center font-mono whitespace-nowrap">-{Number(ex.amount || 0).toFixed(2)} ج.م</td>
+                                  <td className="py-2 px-3 text-center font-mono whitespace-nowrap">{ex.date}</td>
+                                  <td className="py-2 px-3 text-right leading-snug">{ex.notes || "لا يوجد"}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <p className="py-6 text-center text-xs font-bold text-[#555555] border border-dashed border-[#888888]">
+                    مفيش مصروفات مسجّلة لحد دلوقتي
+                  </p>
+                )}
+              </div>
+
+              <div className="bg-[#c3c6bb] border border-[#222222] p-4">
+                <p className="font-extrabold text-sm text-[#000000] mb-3">كل حركات المسحوبات والنثريات ({expenses.length})</p>
                 <div className="overflow-x-auto">
                   <table className="w-full text-right text-xs min-w-[850px] border-collapse">
                     <thead>
@@ -1230,16 +1351,19 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
                   <label className="block text-[#000000] mb-1">التصنيف</label>
                   <select
                     value={expenseForm.category}
-                    onChange={(e) => setExpenseForm({ ...expenseForm, category: e.target.value })}
+                    onChange={(e) => handleCategoryChange(e.target.value)}
                     className="w-full h-9 bg-[#b8bcb2] border border-[#888888] px-2 text-right text-xs font-bold text-[#000000] cursor-pointer focus:outline-none focus:border-[#222222]"
                   >
-                    <option value="صيانة">صيانة عامة</option>
-                    <option value="شراء جهاز">شراء معدات</option>
-                    <option value="بناء">تجهيزات المتجر</option>
-                    <option value="برمجيات ورخص">تراخيص وبرامج</option>
-                    <option value="كهرباء ومرافق">فواتير ومرافق</option>
-                    <option value="رواتب">رواتب وأجور</option>
-                    <option value="أخرى">مصروفات أخرى</option>
+                    {!expenseCategories.some((c) => c.value === expenseForm.category) && expenseForm.category ? (
+                      <option value={expenseForm.category}>{expenseForm.category}</option>
+                    ) : null}
+                    {expenseCategories.map((c) => (
+                      <option key={c.value} value={c.value}>
+                        {c.label}
+                      </option>
+                    ))}
+                    <option value={ADD_CATEGORY}>+ إضافة تصنيف جديد…</option>
+                    <option value={RENAME_CATEGORY}>~ تغيير اسم التصنيف…</option>
                   </select>
                 </div>
               </div>
@@ -1272,6 +1396,64 @@ export default function Reports({ currentUser }: ReportsProps = {}) {
               >
                 {expenseForm.id > 0 ? "حفظ التعديلات" : "تسجيل المصروف"}
               </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* نافذة إضافة / تغيير اسم تصنيف المصروفات */}
+      {catDialog && (
+        <div className="fixed inset-0 bg-[#000000]/60 flex justify-center items-center p-4 z-[60] text-right no-print">
+          <div className="bg-[#c3c6bb] border border-[#222222] p-4 w-full max-w-sm relative space-y-3 font-sans">
+            <button
+              type="button"
+              onClick={() => setCatDialog(null)}
+              className="absolute top-3 left-3 w-8 h-8 flex items-center justify-center bg-[#b8bcb2] hover:bg-[#222222] hover:text-[#c3c6bb] border border-[#888888] cursor-pointer"
+            >
+              <X size={16} />
+            </button>
+
+            <h3 className="font-extrabold text-sm text-[#000000] border-b border-[#888888] pb-2">
+              {catDialog.mode === "add" ? "إضافة تصنيف جديد" : "تغيير اسم التصنيف"}
+            </h3>
+
+            {catDialogError && (
+              <p className="bg-[#b8bcb2] text-[#000000] border border-[#222222] p-2 text-xs font-bold">{catDialogError}</p>
+            )}
+
+            <form onSubmit={submitCategoryDialog} className="space-y-3 text-xs font-bold">
+              <div>
+                <label className="block text-[#000000] mb-1">
+                  {catDialog.mode === "add"
+                    ? "اسم التصنيف الجديد"
+                    : `الاسم الجديد لـ «${expenseForm.category}»`}
+                </label>
+                <input
+                  type="text"
+                  autoFocus
+                  value={catDialog.name}
+                  onChange={(e) => setCatDialog({ ...catDialog, name: e.target.value })}
+                  placeholder="مثال: نقل وشحن بضاعة"
+                  className="w-full h-9 bg-[#b8bcb2] border border-[#888888] px-3 text-right text-xs font-bold text-[#000000] focus:outline-none focus:border-[#222222]"
+                />
+              </div>
+
+              <div className="flex gap-2">
+                <button
+                  type="submit"
+                  disabled={catDialogBusy}
+                  className="flex-1 h-9 bg-[#222222] hover:bg-[#000000] text-[#c3c6bb] font-bold text-xs transition-colors cursor-pointer disabled:opacity-60"
+                >
+                  {catDialogBusy ? "جاري الحفظ..." : catDialog.mode === "add" ? "إضافة التصنيف" : "حفظ الاسم"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCatDialog(null)}
+                  className="h-9 px-4 bg-[#b8bcb2] hover:bg-[#a8ada1] border border-[#888888] text-[#000000] font-bold text-xs transition-colors cursor-pointer"
+                >
+                  إلغاء
+                </button>
+              </div>
             </form>
           </div>
         </div>

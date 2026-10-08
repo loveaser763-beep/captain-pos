@@ -1,7 +1,8 @@
 ﻿import React, { useState, useEffect } from "react";
-import { RefreshCw, Plus, Edit, Trash2, Search, X, Package, Minus, Eye, LineChart as LineChartIcon, BarChart3, CreditCard, Gem, UserCheck, Clock, Monitor, ArrowLeft, Users } from "lucide-react";
+import { RefreshCw, Plus, Edit, Trash2, Search, X, Package, Minus, Eye, LineChart as LineChartIcon, BarChart3, CreditCard, Gem, UserCheck, Clock, Monitor, ArrowLeft, Users, Wheat, Lock } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer } from "recharts";
 import { authFetch, hardRefocus } from "../authFetch";
+import { localDateStr } from "../localDate";
 import UnifiedPrintButton from "./UnifiedPrintButton";
 
 interface TamweenProduct {
@@ -41,7 +42,7 @@ interface Replacement {
   created_at: string;
 }
 
-export default function TamweenReplacements({ onWithdrawNow }: { onWithdrawNow?: (customer: any) => void }) {
+export default function TamweenReplacements({ onWithdrawNow, currentUser }: { onWithdrawNow?: (customer: any) => void; currentUser?: any }) {
   const [replacements, setReplacements] = useState<Replacement[]>([]);
   const [loading, setLoading] = useState(false);
   const [showModal, setShowModal] = useState(false);
@@ -57,16 +58,10 @@ export default function TamweenReplacements({ onWithdrawNow }: { onWithdrawNow?:
   const [suppliers, setSuppliers] = useState<any[]>([]);
   // ملخص الشهر للـ 6 مربعات المضيئة (نفس بند التقارير)
   const [monthSummary, setMonthSummary] = useState<any>(null);
-  // عملاء الشهر (منقول من صفحة العملاء بنفس التنسيق)
-  const [monthCustomers, setMonthCustomers] = useState<any[]>([]);
   // مخطط حجم المبيعات — عنصر إضافي لا يمسّ بقية الصفحة
   const [chartViewType, setChartViewType] = useState<"hourly" | "daily">("daily");
-  const [chartDate, setChartDate] = useState<string>(new Date().toISOString().slice(0, 10));
+  const [chartDate, setChartDate] = useState<string>(localDateStr());
   const [chartSales, setChartSales] = useState<any[]>([]);
-  const [custModal, setCustModal] = useState<"withdrawn" | "later" | "all" | null>(null);
-  const [custSearch, setCustSearch] = useState("");
-  const [pageCust, setPageCust] = useState(1);
-  const [repWithdrawingId, setRepWithdrawingId] = useState<number | null>(null);
   const [repHistCustomer, setRepHistCustomer] = useState<any>(null);
   const [repHistInvoices, setRepHistInvoices] = useState<any[]>([]);
   const [repHistLoading, setRepHistLoading] = useState(false);
@@ -104,10 +99,6 @@ export default function TamweenReplacements({ onWithdrawNow }: { onWithdrawNow?:
       });
       if (res.ok) {
         setRepEditCustomer(null);
-        authFetch(`/api/tamween-customers`)
-          .then((r) => (r.ok ? r.json() : []))
-          .then((list) => setMonthCustomers((Array.isArray(list) ? list : []).filter((x: any) => x.status_month === selectedMonth)))
-          .catch(() => {});
       }
     } catch {}
   };
@@ -117,28 +108,11 @@ export default function TamweenReplacements({ onWithdrawNow }: { onWithdrawNow?:
     try {
       const res = await authFetch(`/api/tamween-customers/${id}`, { method: "DELETE" });
       if (res.ok) {
-        setMonthCustomers((prev) => prev.filter((c: any) => c.id !== id));
+        // اتمسح بنجاح — الجداول بتتحدّث مع التحميل الجديد
       }
     } catch {} finally { try { hardRefocus(); } catch {} }
   };
 
-  const withdrawRepCustomer = async (c: any) => {
-    if (repWithdrawingId !== null || !onWithdrawNow) return;
-    setRepWithdrawingId(c.id);
-    try {
-      let pendingSale: any = null;
-      try {
-        const r = await authFetch(`/api/tamween-customers/${c.id}/pending-sale`);
-        if (r.ok) {
-          const d = await r.json();
-          pendingSale = d.pendingSale || null;
-        }
-      } catch {}
-      onWithdrawNow({ id: c.id, name: c.name, secret_number: c.secret_number, card_value: c.card_value, bread_points: c.bread_points, pendingSale });
-    } finally {
-      setTimeout(() => setRepWithdrawingId(null), 1500);
-    }
-  };
   // تفاصيل المربعات
   const [selectedCard, setSelectedCard] = useState<string | null>(null);
   const PAGE_R = 10;
@@ -146,28 +120,87 @@ export default function TamweenReplacements({ onWithdrawNow }: { onWithdrawNow?:
   const [pageSum, setPageSum] = useState(1);
   const [pageDis, setPageDis] = useState(1);
   const [pageRep, setPageRep] = useState(1);
-  useEffect(() => { setPageModal(1); setPageSum(1); setPageDis(1); }, [selectedCard, custModal, selectedMonth]);
-  useEffect(() => { setPageModal(1); }, [custSearch]);
+  useEffect(() => { setPageModal(1); setPageSum(1); setPageDis(1); }, [selectedCard, selectedMonth]);
   useEffect(() => { setPageRep(1); }, [selectedMonth, searchQuery]);
   const [cardDetails, setCardDetails] = useState<any>(null);
+  const [profitSrc, setProfitSrc] = useState<"card" | "nocard">("card");
   const [cardLoading, setCardLoading] = useState(false);
   const [detailsLoaded, setDetailsLoaded] = useState(false);
   const [remainingDetails, setRemainingDetails] = useState<any[]>([]);
   // مطابقة سمارت (إدخال يدوي يومي): مبيعات سمارت + دعم سمارت + الفرق
   const [machineData, setMachineData] = useState<any>(null);
-  const [machDay, setMachDay] = useState(new Date().toISOString().slice(0, 10));
+  // صف المقارنة الثلاثي (مطابقة سمارت / الدعم المنصرف / نقاط الخبز) + قوائم منبثقة
+  const [sumBox, setSumBox] = useState<"smart" | "cards" | "bread" | null>(null);
+  const [monthlyReport, setMonthlyReport] = useState<{ month: string; data: any } | null>(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  // مستحقات نقاط الخبز (فلوس راكنة عند البنك لحد التحويل للخزينة)
+  const [breadData, setBreadData] = useState<any>(null);
+  const [breadForm, setBreadForm] = useState(false);
+  const [stDate, setStDate] = useState(localDateStr());
+  // الشهر المراد تسويرته (لازم يكون شهر خلص — الشهر الحالي ممنوع)
+  const [stPeriod, setStPeriod] = useState(() => {
+    const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1);
+    return d.toISOString().slice(0, 7);
+  });
+  const [stAmount, setStAmount] = useState("");
+  const [stNote, setStNote] = useState("");
+  const [stSaving, setStSaving] = useState(false);
+  const [stMsg, setStMsg] = useState("");
+  const loadBreadPoints = () =>
+    authFetch("/api/bread-points")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setBreadData(d))
+      .catch(() => setBreadData(null));
+  const [machDay, setMachDay] = useState(localDateStr());
   const [machSales, setMachSales] = useState("");
   const [machSupport, setMachSupport] = useState("");
   const [machDiff, setMachDiff] = useState("");
   const [machNote, setMachNote] = useState("");
   const [machSaving, setMachSaving] = useState(false);
   const [machMsg, setMachMsg] = useState("");
-  const machAutoDiff = (Number(machSupport || 0) || 0) - (Number(machSales || 0) || 0);
   const fetchMachine = () =>
     authFetch(`/api/machine-sales?month=${selectedMonth}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => setMachineData(d))
       .catch(() => setMachineData(null));
+  const loadMonthlyReport = (force = false) => {
+    if (!force && (reportLoading || (monthlyReport && monthlyReport.month === selectedMonth))) return;
+    setReportLoading(true);
+    const m = selectedMonth;
+    authFetch(`/api/tamween/monthly-report?month=${m}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setMonthlyReport({ month: m, data: d }))
+      .catch(() => setMonthlyReport({ month: m, data: null }))
+      .finally(() => setReportLoading(false));
+  };
+  const toggleSumBox = (key: "smart" | "cards" | "bread") => {
+    const next = sumBox === key ? null : key;
+    setSumBox(next);
+    setBreadForm(false); setStMsg("");
+    if (next === "cards" || next === "bread") loadMonthlyReport();
+    if (next === "bread") loadBreadPoints();
+  };
+  const saveSettlement = async () => {
+    const v = Number(stAmount || 0);
+    if (!/^\d{4}-\d{2}$/.test(stPeriod)) { setStMsg("اختار الشهر المتسوّي"); return; }
+    if (stPeriod >= new Date().toISOString().slice(0, 7)) { setStMsg("التسوية من أول شهر لآخره — الشهر لسه شغال"); return; }
+    if (!stDate) { setStMsg("أدخل التاريخ"); return; }
+    if (!v || v <= 0 || isNaN(v)) { setStMsg("المبلغ غير صحيح"); return; }
+    setStSaving(true); setStMsg("");
+    try {
+      const r = await authFetch("/api/bread-points/settle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ period: stPeriod, actual: v, date: stDate, note: stNote }),
+      });
+      const d = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(d?.error || "فشل الحفظ");
+      await loadBreadPoints();
+      setStAmount(""); setStNote(""); setBreadForm(false); setStMsg("تم التحويل للخزينة ✅");
+      setTimeout(() => setStMsg(""), 2500);
+    } catch (e: any) { setStMsg(e?.message || "خطأ في الحفظ"); }
+    finally { setStSaving(false); }
+  };
   const saveMachineDay = async () => {
     if (!machDay) { setMachMsg("أدخل التاريخ"); return; }
     const s = Number(machSales || 0);
@@ -200,7 +233,7 @@ export default function TamweenReplacements({ onWithdrawNow }: { onWithdrawNow?:
     const start = `${selectedMonth}-01`;
     const end = `${selectedMonth}-${String(lastDay).padStart(2, "0")}`;
     // بيانات مخطط المبيعات لشهر مختار (فواتير مبيعات غير مرتجعة)
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayStr = localDateStr();
     setChartDate(todayStr >= start && todayStr <= end ? todayStr : end);
     authFetch(`/api/reports?reportType=sales&startDate=${start}&endDate=${end}`)
       .then((r) => (r.ok ? r.json() : null))
@@ -225,12 +258,8 @@ export default function TamweenReplacements({ onWithdrawNow }: { onWithdrawNow?:
       .then((t) => setRemainingDetails(Array.isArray(t) ? t : []))
       .catch(() => setRemainingDetails([]));
     fetchMachine();
-    authFetch(`/api/tamween-customers`)
-      .then((r) => (r.ok ? r.json() : []))
-      .then((list) => setMonthCustomers(
-        (Array.isArray(list) ? list : []).filter((c: any) => c.status_month === selectedMonth)
-      ))
-      .catch(() => setMonthCustomers([]));
+    if (sumBox === "cards" || sumBox === "bread") loadMonthlyReport();
+    if (sumBox === "bread") loadBreadPoints();
     fetchReplacements();
   };
   useEffect(() => {
@@ -238,9 +267,120 @@ export default function TamweenReplacements({ onWithdrawNow }: { onWithdrawNow?:
     fetchMonthData();
   }, [selectedMonth]);
 
+  // ===== إجراءات على الفواتير جوّه القوائم المنبثقة (عرض · تعديل · حذف) =====
+  const isAdminUser = currentUser?.role === "admin" || currentUser?.role === "developer";
+  const canEditInvoice = isAdminUser || (currentUser?.permissions || []).includes("edit_invoice");
+  const canDeleteInvoice = isAdminUser || (currentUser?.permissions || []).includes("delete_invoice");
+  const [invView, setInvView] = useState<any>(null);
+  const [invViewItems, setInvViewItems] = useState<any[]>([]);
+  const [invViewLoading, setInvViewLoading] = useState(false);
+  const [invEdit, setInvEdit] = useState<any>(null);
+  const [invEditForm, setInvEditForm] = useState({ customer_supplier_name: "", payment_source: "cash_register", paid: 0, remaining: 0 });
+  const [invDelete, setInvDelete] = useState<any>(null);
+  const [invBusy, setInvBusy] = useState(false);
+  const [invMsg, setInvMsg] = useState("");
+
+  const refreshAfterInvoiceAction = () => {
+    setMonthlyReport(null);
+    setReportLoading(false);
+    fetchMonthData();
+    setTimeout(() => loadMonthlyReport(true), 0);
+  };
+
+  const openInvView = async (inv: any) => {
+    if (!inv?.id) return;
+    setInvView(inv); setInvViewItems([]); setInvViewLoading(true); setInvMsg("");
+    try {
+      const res = await authFetch(`/api/invoices/${inv.id}`);
+      if (!res.ok) throw new Error();
+      const d = await res.json();
+      setInvViewItems(d.items || []);
+    } catch { setInvMsg("تعذّر تحميل أصناف الفاتورة."); }
+    finally { setInvViewLoading(false); }
+  };
+
+  const openInvEdit = (inv: any) => {
+    if (!inv?.id) return;
+    setInvEdit(inv);
+    setInvEditForm({
+      customer_supplier_name: inv.customer_supplier_name || "",
+      payment_source: inv.payment_source || "cash_register",
+      paid: Number(inv.paid || 0),
+      remaining: Number(inv.remaining || 0),
+    });
+    setInvMsg("");
+  };
+
+  const saveInvEdit = async () => {
+    if (!invEdit?.id || invBusy) return;
+    setInvBusy(true); setInvMsg("");
+    try {
+      const res = await authFetch(`/api/invoices/${invEdit.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...invEditForm, user_name: currentUser?.name || "مدير النظام" }),
+      });
+      const d = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(d?.error || "تعذّر حفظ التعديلات.");
+      setInvEdit(null);
+      setNotice(`تم تعديل الفاتورة ${invEdit.invoice_number} بنجاح ✅`);
+      refreshAfterInvoiceAction();
+    } catch (e: any) { setInvMsg(e?.message || "خطأ أثناء حفظ التعديلات."); }
+    finally { setInvBusy(false); }
+  };
+
+  const deleteInvoiceNow = async () => {
+    if (!invDelete?.id || invBusy) return;
+    setInvBusy(true); setInvMsg("");
+    try {
+      const res = await authFetch(
+        `/api/invoices/${invDelete.id}?user_name=${encodeURIComponent(currentUser?.name || "")}&user_role=${encodeURIComponent(currentUser?.role || "")}`,
+        { method: "DELETE" }
+      );
+      const d = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(d?.error || "فشل حذف الفاتورة.");
+      setInvDelete(null);
+      setNotice(`تم حذف الفاتورة ${invDelete.invoice_number} واستعادة كمياتها للمخزن ✅`);
+      refreshAfterInvoiceAction();
+    } catch (e: any) { setInvMsg(e?.message || "فشل حذف الفاتورة."); }
+    finally { setInvBusy(false); }
+  };
+
+  const invActionsCell = (inv: any) => (
+    <td className="py-2 px-3 text-center">
+      <div className="flex gap-1 justify-center">
+        <button onClick={() => openInvView(inv)} title="عرض أصناف الفاتورة"
+          className="bg-[#8e44ad] text-white p-1.5 hover:bg-[#7d3c98] transition-colors rounded cursor-pointer">
+          <Eye size={14} />
+        </button>
+        {canEditInvoice ? (
+          <button onClick={() => openInvEdit(inv)} title="تعديل الفاتورة"
+            className="bg-blue-500 text-white p-1.5 hover:bg-blue-600 transition-colors rounded cursor-pointer">
+            <Edit size={14} />
+          </button>
+        ) : (
+          <span title="ممنوع — مفيش صلاحية تعديل" className="bg-[#b8bcb2] text-[#888888] p-1.5 rounded">
+            <Lock size={14} />
+          </span>
+        )}
+        {canDeleteInvoice ? (
+          <button onClick={() => { setInvDelete(inv); setInvMsg(""); }} title="حذف الفاتورة"
+            className="bg-red-500 text-white p-1.5 hover:bg-red-600 transition-colors rounded cursor-pointer">
+            <Trash2 size={14} />
+          </button>
+        ) : (
+          <span title="ممنوع — مفيش صلاحية حذف" className="bg-[#b8bcb2] text-[#888888] p-1.5 rounded">
+            <Lock size={14} />
+          </span>
+        )}
+      </div>
+    </td>
+  );
+
   const openCardDetails = (key: string) => {
     setSelectedCard(key);
     setCardLoading(false);
+    if (key === "profit") setProfitSrc("card");
   };
   // تقسيم الصفحات: 10 عناصر للصفحة + سكرول
   const paginate = (arr: any[], page: number) => {
@@ -272,7 +412,7 @@ export default function TamweenReplacements({ onWithdrawNow }: { onWithdrawNow?:
   };
   
   const [form, setForm] = useState({
-    date: new Date().toISOString().slice(0, 10),
+    date: localDateStr(),
     invoice_number: "",
     supplier_name: "",
     items_description: "",
@@ -491,7 +631,7 @@ const fetchReplacements = async () => {
 
   const resetForm = () => {
     setForm({
-      date: new Date().toISOString().slice(0, 10),
+      date: localDateStr(),
       invoice_number: "",
       supplier_name: "",
       items_description: "",
@@ -539,8 +679,18 @@ const fetchReplacements = async () => {
   const chartDataArray = processChartData();
 
   // صفوف جدول "مبيعات التموين": البند التمويني (أي طريقة دفع) + الحر (بكارت الدعم فقط) — مطابقة للمربعات الثلاثة
+  // مربعات الربح: أصناف تموينية مباعة بالبطاقة / بدون بطاقة + إجمالياتها
+  const profitRows: any[] = (profitSrc === "card"
+    ? ((cardDetails?.tamweenCardItems as any[]) || [])
+    : ((cardDetails?.tamweenNoCardItems as any[]) || []));
+  const profitGain = profitRows.filter((it: any) => Number(it.profit || 0) > 0).reduce((s: number, it: any) => s + Number(it.profit || 0), 0);
+  const profitLoss = profitRows.filter((it: any) => Number(it.profit || 0) < 0).reduce((s: number, it: any) => s + Number(it.profit || 0), 0);
+  const profitNet = profitGain + profitLoss;
+  const netOf = (key: "card" | "nocard") =>
+    (((key === "card" ? cardDetails?.tamweenCardItems : cardDetails?.tamweenNoCardItems) as any[]) || [])
+      .reduce((s: number, it: any) => s + Number(it.profit || 0), 0);
   const salesRows: any[] = selectedCard === "profit"
-    ? ((cardDetails?.salesItems as any[]) || [])
+    ? profitRows
     : [
         ...(((cardDetails?.tamweenAllItems as any[]) || []).map((it: any) => ({ ...it, band: "tamween" }))),
         ...(((cardDetails?.freeSalesItems as any[]) || []).map((it: any) => ({ ...it, band: "free" }))),
@@ -605,65 +755,316 @@ const fetchReplacements = async () => {
             <span className="text-[11px] font-mono font-bold px-2 py-1 rounded-lg" style={{ background: "var(--bg-input)", color: "var(--text-secondary)", border: "1px solid var(--border)" }}>{selectedMonth}</span>
             <div className="flex-1 h-px" style={{ background: "linear-gradient(90deg,var(--border),transparent)" }} />
           </div>
-          {/* بانر مطابقة سمارت */}
+          {/* صف المقارنة الثلاثي + قوائم منبثقة */}
           {(() => {
-            const mt = machineData?.totals || { smartSales: 0, smartSupport: 0, diff: 0, autoDiff: 0 };
+            const mt = machineData?.totals || { smartSales: 0, smartSupport: 0, diff: 0 };
             const diff = Number(mt.diff || 0);
+            const report = monthlyReport && monthlyReport.month === selectedMonth ? monthlyReport.data : null;
             const tone = diff < 0
               ? { c: "#e11d48", soft: "rgba(225,29,72,.10)", bg: "rgba(225,29,72,.14)" }
               : diff > 0
                 ? { c: "#d97706", soft: "rgba(217,119,6,.10)", bg: "rgba(217,119,6,.14)" }
                 : { c: "#2563eb", soft: "rgba(37,99,235,.10)", bg: "rgba(37,99,235,.12)" };
+            const boxes = [
+              {
+                key: "smart" as const, label: "مقارنة مبيعات سمارت", value: diff, unit: "ج.م",
+                sub: `مبيعات ${Number(mt.smartSales || 0).toFixed(2)} • دعم ${Number(mt.smartSupport || 0).toFixed(2)}`,
+                Icon: Monitor, accent: tone.c, iconBg: tone.bg,
+              },
+              {
+                key: "cards" as const, label: "إجمالي الدعم المنصرف", value: Number(monthSummary.disbursed || 0), unit: "ج.م",
+                sub: `${Number(monthSummary.cardsUsed || 0)} كارت مصروف`,
+                Icon: CreditCard, accent: "#d97706", iconBg: "rgba(217,119,6,.12)",
+              },
+              {
+                key: "bread" as const, label: "إجمالي نقاط الخبز", value: Number(monthSummary.breadPoints || 0), unit: "نقطة",
+                sub: report ? `${(report.breadInvoices || []).length} فاتورة` : "اضغط لعرض الفواتير",
+                Icon: Wheat, accent: "#059669", iconBg: "rgba(5,150,105,.12)",
+              },
+            ];
+            const list = Array.isArray(machineData?.list) ? machineData.list : [];
+            const cardInvoices = report ? (report.invoices || []) : [];
+            const breadInvoices = report ? (report.breadInvoices || []) : [];
+            const settlements = breadData?.settlements || [];
             return (
-              <div
-                onClick={() => openCardDetails("machine")}
-                title="اضغط لعرض تفاصيل المطابقة"
-                className="group relative mb-4 p-4 rounded-2xl cursor-pointer transition-all duration-200 hover:-translate-y-0.5 overflow-hidden"
-                style={{
-                  background: `linear-gradient(115deg, ${tone.soft} 0%, var(--bg-card) 55%)`,
-                  border: "1px solid var(--border)",
-                  boxShadow: "0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.05)",
-                }}
-              >
-                <span className="absolute inset-y-0 right-0 w-[3px]" style={{ background: tone.c }} />
-                <div className="flex items-center justify-between gap-4 flex-wrap">
-                  <div className="flex items-center gap-3">
-                    <span className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0" style={{ background: tone.bg, color: tone.c }}>
-                      <Monitor size={20} strokeWidth={2.25} />
-                    </span>
-                    <div>
-                      <div className="text-[13px] font-black" style={{ color: "var(--text-primary)" }}>مطابقة سمارت</div>
-                      <div className="text-[11px] font-bold font-mono mt-0.5" style={{ color: "var(--text-muted)" }}>
-                        مبيعات {Number(mt.smartSales || 0).toFixed(2)} • دعم {Number(mt.smartSupport || 0).toFixed(2)}
+              <div className="mb-4">
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  {boxes.map((b) => {
+                    const open = sumBox === b.key;
+                    const Icon = b.Icon;
+                    return (
+                      <div
+                        key={b.key}
+                        onClick={() => toggleSumBox(b.key)}
+                        title="اضغط لعرض القائمة"
+                        className="relative p-4 rounded-2xl cursor-pointer transition-all duration-200 hover:-translate-y-0.5 overflow-hidden"
+                        style={{
+                          background: open ? b.iconBg : "var(--bg-card)",
+                          border: `1px solid ${open ? b.accent : "var(--border)"}`,
+                          boxShadow: "0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.05)",
+                        }}
+                      >
+                        <span className="absolute top-0 inset-x-0 h-[3px]" style={{ background: b.accent }} />
+                        <div className="flex items-start justify-between gap-2">
+                          <span className="text-[12px] font-bold leading-snug pt-0.5" style={{ color: "var(--text-secondary)" }}>{b.label}</span>
+                          <span className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: b.iconBg, color: b.accent }}>
+                            <Icon size={18} strokeWidth={2.25} />
+                          </span>
+                        </div>
+                        <div className="flex items-baseline gap-1.5 flex-wrap mt-1">
+                          <h4 className="text-[26px] font-black font-mono leading-none tracking-tight" style={{ color: "var(--text-primary)" }}>
+                            {b.value < 0 ? "−" : ""}{Math.abs(b.value).toFixed(2)}
+                          </h4>
+                          <span className="text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>{b.unit}</span>
+                          <span className="text-[11px] font-bold" style={{ color: "var(--text-muted)" }}>{b.sub}</span>
+                          <span className="text-[10px] font-black mr-auto" style={{ color: b.accent }}>{open ? "▲" : "▼"}</span>
+                        </div>
                       </div>
+                    );
+                  })}
+                </div>
+
+                {sumBox && (
+                  <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" style={{ direction: "rtl" }} onClick={() => setSumBox(null)}>
+                  <div className="w-full max-w-3xl max-h-[85vh] overflow-hidden border shadow-2xl flex flex-col" style={{ borderColor: "#888888", background: "var(--bg-card)", boxShadow: "0 24px 60px rgba(0,0,0,.35)" }} onClick={(e) => e.stopPropagation()}>
+                    <div className="px-4 py-3 flex items-center justify-between gap-2 flex-wrap shrink-0" style={{ background: "#222222", borderBottom: "2px solid #888888" }}>
+                      <span className="text-[13px] font-black" style={{ color: "#c3c6bb" }}>
+                        {sumBox === "smart" ? "قائمة مبيعات سمارت (يوم بيوم)" : sumBox === "cards" ? "قائمة فواتير الدعم المنصرف" : "قائمة فواتير نقاط الخبز"}
+                        <span className="font-mono text-[10px] font-bold mr-2 px-1.5 py-0.5 rounded" style={{ background: "rgba(255,255,255,.12)", color: "#c3c6bb", border: "1px solid rgba(255,255,255,.2)" }}>{selectedMonth}</span>
+                      </span>
+                      <button onClick={() => setSumBox(null)} className="text-[12px] font-black cursor-pointer hover:opacity-70" style={{ color: "#c3c6bb" }}>إغلاق ✕</button>
                     </div>
-                  </div>
-                  <div className="flex items-baseline gap-2">
-                    <div className="text-left">
-                      <div className="text-[10px] font-black" style={{ color: "var(--text-muted)" }}>الفرق (الخصم من الدعم)</div>
-                      <div className="text-[30px] font-black font-mono leading-none tracking-tight" style={{ color: tone.c }}>
-                        {diff < 0 ? "−" : ""}{Math.abs(diff).toFixed(2)}
+
+                    <div className="overflow-auto flex-1">
+                      {sumBox === "smart" && (
+                        list.length === 0 ? (
+                          <div className="px-4 py-7 text-center">
+                            <div className="text-[13px] font-black mb-1" style={{ color: "var(--text-primary)" }}>لا توجد أيام مُدخلة لشهر {selectedMonth}</div>
+                            <div className="text-[11px] font-bold" style={{ color: "var(--text-muted)" }}>افتح شاشة المطابقة عشان تضيف مبيعات ودعم سمارت</div>
+                          </div>
+                        ) : (
+                          <table className="w-full text-right text-xs border-collapse">
+                            <thead>
+                              <tr style={{ background: "var(--bg-card-hover)", color: "var(--text-primary)" }}>
+                                <th className="py-2 px-3 font-black">#</th>
+                                <th className="py-2 px-3 font-black">التاريخ</th>
+                                <th className="py-2 px-3 font-black">مبيعات سمارت</th>
+                                <th className="py-2 px-3 font-black">دعم سمارت</th>
+                                <th className="py-2 px-3 font-black">الفرق</th>
+                                <th className="py-2 px-3 font-black">ملاحظة</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {list.map((d: any, i: number) => (
+                                <tr key={d.day} style={{ background: i % 2 ? "var(--bg-card-hover)" : "var(--bg-card)" }}>
+                                  <td className="py-2 px-3 font-mono font-black" style={{ color: "var(--text-muted)" }}>{i + 1}</td>
+                                  <td className="py-2 px-3 font-mono font-black" style={{ color: "var(--text-secondary)" }}>{d.day}</td>
+                                  <td className="py-2 px-3 font-mono font-black" style={{ color: "var(--primary)" }}>{Number(d.smartSales || 0).toFixed(2)}</td>
+                                  <td className="py-2 px-3 font-mono font-black" style={{ color: "var(--series-2)" }}>{Number(d.smartSupport || 0).toFixed(2)}</td>
+                                  <td className="py-2 px-3 font-mono font-black" style={{ color: Number(d.diff || 0) < 0 ? "var(--danger)" : Number(d.diff || 0) > 0 ? "var(--warning)" : "var(--text-secondary)" }}>
+                                    {Number(d.diff || 0) < 0 ? "−" : ""}{Math.abs(Number(d.diff || 0)).toFixed(2)}
+                                  </td>
+                                  <td className="py-2 px-3 font-bold" style={{ color: "var(--text-muted)" }}>{d.note || "—"}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        )
+                      )}
+
+                      {sumBox === "cards" && (
+                        !report ? (
+                          <div className="px-4 py-7 text-center text-[12px] font-black" style={{ color: "var(--text-muted)" }}>{reportLoading ? "جارٍ التحميل..." : "تعذر تحميل الفواتير"}</div>
+                        ) : cardInvoices.length === 0 ? (
+                          <div className="px-4 py-7 text-center text-[12px] font-black" style={{ color: "var(--text-muted)" }}>مفيش فواتير فيها دعم تمويني في {selectedMonth}</div>
+                        ) : (
+                          <table className="w-full text-right text-xs border-collapse">
+                            <thead>
+                              <tr style={{ background: "var(--bg-card-hover)", color: "var(--text-primary)" }}>
+                                <th className="py-2 px-3 font-black">#</th>
+                                <th className="py-2 px-3 font-black">رقم الفاتورة</th>
+                                <th className="py-2 px-3 font-black">التاريخ</th>
+                                <th className="py-2 px-3 font-black">العميل</th>
+                                <th className="py-2 px-3 font-black">قيمة الدعم</th>
+                                <th className="py-2 px-3 font-black text-center">إجراءات</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {cardInvoices.map((inv: any, i: number) => (
+                                <tr key={inv.invoice_number + i} style={{ background: i % 2 ? "var(--bg-card-hover)" : "var(--bg-card)" }}>
+                                  <td className="py-2 px-3 font-mono font-black" style={{ color: "var(--text-muted)" }}>{i + 1}</td>
+                                  <td className="py-2 px-3 font-mono font-bold" style={{ color: "var(--text-secondary)" }}>{inv.invoice_number}</td>
+                                  <td className="py-2 px-3 font-mono font-bold" style={{ color: "var(--text-secondary)" }}>{inv.date}</td>
+                                  <td className="py-2 px-3 font-bold" style={{ color: "var(--text-primary)" }}>{inv.customer_supplier_name || "—"}</td>
+                                  <td className="py-2 px-3 font-mono font-black" style={{ color: "#d97706" }}>{Number(inv.tamween_discount || 0).toFixed(2)}</td>
+                                  {invActionsCell(inv)}
+                                </tr>
+                              ))}
+                            </tbody>
+                            <tfoot>
+                              <tr style={{ background: "var(--bg-input)", borderTop: "2px solid var(--border-strong)" }}>
+                                <td className="py-2 px-3 font-black" colSpan={5} style={{ color: "var(--text-secondary)" }}>إجمالي {cardInvoices.length} فاتورة</td>
+                                <td className="py-2 px-3 font-mono font-black" style={{ color: "#d97706" }}>
+                                  {cardInvoices.reduce((s: number, inv: any) => s + Number(inv.tamween_discount || 0), 0).toFixed(2)}
+                                </td>
+                              </tr>
+                            </tfoot>
+                          </table>
+                        )
+                      )}
+
+                      {sumBox === "bread" && (
+                        <div>
+                          {/* مستحقات نقاط الخبز: متراكم • مُحوَّل • رصيد راكن */}
+                          <div className="px-4 pt-3 grid grid-cols-3 gap-2">
+                            {[
+                              { l: "متراكم من الفواتير", v: Number(breadData?.accrued || 0), c: "#059669" },
+                              { l: "مُحوَّل للخزينة", v: Number(breadData?.settled || 0), c: "#2563eb" },
+                              { l: "رصيد المستحقات (راكن)", v: Number(breadData?.balance || 0), c: "#d97706" },
+                            ].map((s) => (
+                              <div key={s.l} className="rounded-xl p-2.5 text-center" style={{ background: "var(--bg-card-hover)", border: "1px solid var(--border)" }}>
+                                <div className="text-[10px] font-black mb-1" style={{ color: "var(--text-muted)" }}>{s.l}</div>
+                                <div className="font-mono font-black text-[16px]" style={{ color: s.c }}>{s.v.toFixed(2)}</div>
+                              </div>
+                            ))}
+                          </div>
+                          <div className="px-4 pt-2.5 flex items-center gap-2 flex-wrap">
+                            <button
+                              onClick={() => { setBreadForm((v) => !v); setStMsg(""); }}
+                              disabled={Number(breadData?.balance || 0) <= 0}
+                              className="h-8 px-3 rounded-lg text-[12px] font-black cursor-pointer transition-all hover:opacity-80 disabled:opacity-40 disabled:cursor-not-allowed"
+                              style={{ background: "#059669", color: "#fff" }}
+                            >
+                              صرف نقاط الخبز ← الخزينة
+                            </button>
+                            {stMsg && <span className="text-[11px] font-black" style={{ color: stMsg.includes("✅") ? "#059669" : "#e11d48" }}>{stMsg}</span>}
+                          </div>
+                          {breadForm && (
+                            <div className="mx-4 mt-2 p-3 rounded-xl flex items-end gap-2 flex-wrap" style={{ background: "var(--bg-card-hover)", border: "1px dashed var(--border-strong)" }}>
+                              <label className="flex flex-col gap-1">
+                                <span className="text-[10px] font-black" style={{ color: "var(--text-muted)" }}>الشهر المتسوّي</span>
+                                <input type="month" value={stPeriod} onChange={(e) => setStPeriod(e.target.value)} className="h-8 px-2 rounded-lg text-[12px] font-bold" style={{ background: "var(--bg-input)", color: "var(--text-primary)", border: "1px solid var(--border)" }} />
+                              </label>
+                              <label className="flex flex-col gap-1">
+                                <span className="text-[10px] font-black" style={{ color: "var(--text-muted)" }}>التاريخ</span>
+                                <input type="date" value={stDate} onChange={(e) => setStDate(e.target.value)} className="h-8 px-2 rounded-lg text-[12px] font-bold" style={{ background: "var(--bg-input)", color: "var(--text-primary)", border: "1px solid var(--border)" }} />
+                              </label>
+                              <label className="flex flex-col gap-1">
+                                <span className="text-[10px] font-black" style={{ color: "var(--text-muted)" }}>المبلغ (المتاح {Number(breadData?.balance || 0).toFixed(2)})</span>
+                                <input type="number" step="0.01" value={stAmount} onChange={(e) => setStAmount(e.target.value)} placeholder="0.00" className="h-8 w-28 px-2 rounded-lg text-[12px] font-bold font-mono" style={{ background: "var(--bg-input)", color: "var(--text-primary)", border: "1px solid var(--border)" }} />
+                              </label>
+                              <label className="flex flex-col gap-1 flex-1 min-w-[160px]">
+                                <span className="text-[10px] font-black" style={{ color: "var(--text-muted)" }}>ملاحظة</span>
+                                <input type="text" value={stNote} onChange={(e) => setStNote(e.target.value)} placeholder="رد البنك..." className="h-8 px-2 rounded-lg text-[12px] font-bold" style={{ background: "var(--bg-input)", color: "var(--text-primary)", border: "1px solid var(--border)" }} />
+                              </label>
+                              <button
+                                onClick={saveSettlement}
+                                disabled={stSaving}
+                                className="h-8 px-4 rounded-lg text-[12px] font-black cursor-pointer disabled:opacity-50"
+                                style={{ background: "var(--accent)", color: "#fff" }}
+                              >
+                                {stSaving ? "جارٍ الحفظ..." : "تأكيد التحويل"}
+                              </button>
+                            </div>
+                          )}
+                          {!report ? (
+                          <div className="px-4 py-7 text-center text-[12px] font-black" style={{ color: "var(--text-muted)" }}>{reportLoading ? "جارٍ التحميل..." : "تعذر تحميل الفواتير"}</div>
+                        ) : breadInvoices.length === 0 ? (
+                          <div className="px-4 py-7 text-center text-[12px] font-black" style={{ color: "var(--text-muted)" }}>مفيش فواتير فيها نقاط خبز في {selectedMonth}</div>
+                        ) : (
+                          <table className="w-full text-right text-xs border-collapse">
+                            <thead>
+                              <tr style={{ background: "var(--bg-card-hover)", color: "var(--text-primary)" }}>
+                                <th className="py-2 px-3 font-black">#</th>
+                                <th className="py-2 px-3 font-black">رقم الفاتورة</th>
+                                <th className="py-2 px-3 font-black">التاريخ</th>
+                                <th className="py-2 px-3 font-black">العميل</th>
+                                <th className="py-2 px-3 font-black">نقاط الخبز</th>
+                                <th className="py-2 px-3 font-black text-center">إجراءات</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {breadInvoices.map((inv: any, i: number) => (
+                                <tr key={inv.invoice_number + i} style={{ background: i % 2 ? "var(--bg-card-hover)" : "var(--bg-card)" }}>
+                                  <td className="py-2 px-3 font-mono font-black" style={{ color: "var(--text-muted)" }}>{i + 1}</td>
+                                  <td className="py-2 px-3 font-mono font-bold" style={{ color: "var(--text-secondary)" }}>{inv.invoice_number}</td>
+                                  <td className="py-2 px-3 font-mono font-bold" style={{ color: "var(--text-secondary)" }}>{inv.date}</td>
+                                  <td className="py-2 px-3 font-bold" style={{ color: "var(--text-primary)" }}>{inv.customer_supplier_name || "—"}</td>
+                                  <td className="py-2 px-3 font-mono font-black" style={{ color: "#059669" }}>{Number(inv.bread_points || 0)}</td>
+                                  {invActionsCell(inv)}
+                                </tr>
+                              ))}
+                            </tbody>
+                            <tfoot>
+                              <tr style={{ background: "var(--bg-input)", borderTop: "2px solid var(--border-strong)" }}>
+                                <td className="py-2 px-3 font-black" colSpan={5} style={{ color: "var(--text-secondary)" }}>إجمالي {breadInvoices.length} فاتورة</td>
+                                <td className="py-2 px-3 font-mono font-black" style={{ color: "#059669" }}>
+                                  {breadInvoices.reduce((s: number, inv: any) => s + Number(inv.bread_points || 0), 0)}
+                                </td>
+                              </tr>
+                            </tfoot>
+                          </table>
+                        )
+                        }
+                        {/* تقرير التحويلات السابقة (للاطلاع بعدين) */}
+                        <div className="px-4 py-3">
+                          <div className="text-[11px] font-black mb-1.5" style={{ color: "var(--text-secondary)" }}>تقرير التحويلات للخزينة</div>
+                          {settlements.length === 0 ? (
+                            <div className="text-[11px] font-bold" style={{ color: "var(--text-muted)" }}>مفيش تحويلات لحد دلوقتي — الرصيد كله لسه راكن عند البنك</div>
+                          ) : (
+                            <table className="w-full text-right text-xs border-collapse">
+                              <thead>
+                                <tr style={{ background: "var(--bg-card-hover)", color: "var(--text-primary)" }}>
+                                  <th className="py-1.5 px-2 font-black">#</th>
+                                  <th className="py-1.5 px-2 font-black">التاريخ</th>
+                                  <th className="py-1.5 px-2 font-black">المبلغ</th>
+                                  <th className="py-1.5 px-2 font-black">ملاحظة</th>
+                                  <th className="py-1.5 px-2 font-black">المُدخل</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {settlements.map((s: any, i: number) => (
+                                  <tr key={s.id} style={{ background: i % 2 ? "var(--bg-card-hover)" : "var(--bg-card)" }}>
+                                    <td className="py-1.5 px-2 font-mono font-black" style={{ color: "var(--text-muted)" }}>{i + 1}</td>
+                                    <td className="py-1.5 px-2 font-mono font-bold" style={{ color: "var(--text-secondary)" }}>{String(s.date || "").slice(0, 10)}</td>
+                                    <td className="py-1.5 px-2 font-mono font-black" style={{ color: "#2563eb" }}>{Number(s.amount || 0).toFixed(2)}</td>
+                                    <td className="py-1.5 px-2 font-bold" style={{ color: "var(--text-muted)" }}>{s.note || "—"}</td>
+                                    <td className="py-1.5 px-2 font-bold" style={{ color: "var(--text-muted)" }}>{s.created_by || "—"}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          )}
+                        </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {sumBox === "smart" && (
+                      <div className="px-4 py-2.5 flex items-center justify-between gap-3 flex-wrap" style={{ background: "var(--bg-card-hover)", borderTop: "2px solid var(--border-strong)" }}>
+                        <span className="text-[11px] font-black font-mono" style={{ color: "var(--text-muted)" }}>
+                          إجمالي: مبيعات {Number(mt.smartSales || 0).toFixed(2)} • دعم {Number(mt.smartSupport || 0).toFixed(2)} • الفرق {diff < 0 ? "−" : ""}{Math.abs(diff).toFixed(2)} (الفرق = الدعم − المبيعات)
+                        </span>
+                        <button
+                          onClick={() => { setSumBox(null); openCardDetails("machine"); }}
+                          className="h-7 px-3 rounded-lg text-[11px] font-black cursor-pointer transition-all hover:opacity-80"
+                          style={{ background: "var(--accent)", color: "#fff" }}
+                        >
+                          فتح شاشة المطابقة كاملة
+                        </button>
                       </div>
-                    </div>
-                    <span className="text-sm font-black" style={{ color: "var(--text-muted)" }}>ج.م</span>
+                    )}
                   </div>
-                </div>
-                <div className="mt-3 flex items-center justify-between gap-3 flex-wrap">
-                  <span className="text-[11px] font-black flex items-center gap-1.5" style={{ color: tone.c }}>
-                    {machineData?.entries || 0} يوم مُدخل — اضغط للتفاصيل
-                    <ArrowLeft size={12} className="transition-transform group-hover:-translate-x-0.5" />
-                  </span>
-                  <span className="text-[11px] font-black font-mono" style={{ color: "var(--text-muted)" }}>الفرق = الدعم − المبيعات</span>
-                </div>
+                  </div>
+                )}
               </div>
             );
           })()}
-          {/* صف المربعات الأربعة */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          {/* صف المربعات الثلاثة */}
+          <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
             {[
               { key: "sales", label: "إجمالي مبيعات التموين", value: (monthSummary.sales || 0).toFixed(2), unit: "ج.م", Icon: BarChart3, accent: "#2563eb", iconBg: "rgba(37,99,235,.12)" },
               { key: "replacements", label: "إجمالي الاستعاضات", value: (monthSummary.replacements || 0).toFixed(2), unit: "ج.م", Icon: RefreshCw, accent: "#7c3aed", iconBg: "rgba(124,58,237,.12)" },
-              { key: "disbursed", label: "إجمالي الدعم المنصرف", value: (monthSummary.disbursed || 0).toFixed(2), unit: "ج.م", Icon: CreditCard, accent: "#d97706", iconBg: "rgba(217,119,6,.12)" },
               { key: "profit", label: "صافي ربح التموين الفعلي", value: (monthSummary.profit || 0).toFixed(2), unit: "ج.م", Icon: Gem, accent: "#059669", iconBg: "rgba(5,150,105,.12)", sub: `مكاسب: ${(monthSummary.gains || 0).toFixed(2)} • خسائر: ${(monthSummary.losses || 0).toFixed(2)}` },
             ].map((c) => {
               const Icon = c.Icon;
@@ -694,48 +1095,6 @@ const fetchReplacements = async () => {
                 </div>
               );
             })}
-          </div>
-          {/* صف عملاء الشهر — نصفين */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
-            {(() => {
-              const w = monthCustomers.filter((c: any) => c.status === "withdrawn");
-              const l = monthCustomers.filter((c: any) => c.status === "later");
-              const sumC = (a: any[]) => a.reduce((s, c) => s + Number(c.card_value || 0), 0);
-              const sumB = (a: any[]) => a.reduce((s, c) => s + Number(c.bread_points || 0), 0);
-              const defs = [
-                { k: "withdrawn", label: "عملاء تم الصرف", value: `${w.length}`, unit: "عميل", sub: `تموين: ${sumC(w).toFixed(2)} ج.م • خبز: ${sumB(w).toFixed(2)} ج.م`, Icon: UserCheck, accent: "#0891b2", iconBg: "rgba(8,145,178,.12)" },
-                { k: "later", label: "عملاء صرف لاحق", value: `${l.length}`, unit: "عميل", sub: `تموين: ${sumC(l).toFixed(2)} ج.م • خبز: ${sumB(l).toFixed(2)} ج.م`, Icon: Clock, accent: "#d97706", iconBg: "rgba(217,119,6,.12)" },
-              ];
-              return defs.map((c) => {
-                const Icon = c.Icon;
-                return (
-                  <div
-                    key={c.k}
-                    onClick={() => setCustModal(c.k as any)}
-                    title="اضغط لعرض العملاء"
-                    className="group relative p-4 rounded-2xl text-right cursor-pointer transition-all duration-200 hover:-translate-y-1 overflow-hidden min-h-[124px] flex flex-col justify-between"
-                    style={{ background: "var(--bg-card)", border: "1px solid var(--border)", boxShadow: "0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.05)" }}
-                  >
-                    <span className="absolute top-0 inset-x-0 h-[3px]" style={{ background: c.accent }} />
-                    <div className="flex items-start justify-between gap-2">
-                      <span className="text-[12px] font-bold leading-snug pt-0.5" style={{ color: "var(--text-secondary)" }}>{c.label}</span>
-                      <span className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: c.iconBg, color: c.accent }}>
-                        <Icon size={18} strokeWidth={2.25} />
-                      </span>
-                    </div>
-                    <div className="flex items-baseline gap-1.5 mt-1">
-                      <h4 className="text-[30px] font-black font-mono leading-none tracking-tight" style={{ color: "var(--text-primary)" }}>{c.value}</h4>
-                      <span className="text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>{c.unit}</span>
-                    </div>
-                    <span className="text-[11px] font-semibold block mt-1.5 font-mono leading-snug" style={{ color: "var(--text-muted)" }}>{c.sub}</span>
-                    <span className="text-[11px] font-bold flex items-center gap-1 mt-2.5" style={{ color: c.accent }}>
-                      العملاء
-                      <ArrowLeft size={12} className="transition-transform group-hover:-translate-x-0.5" />
-                    </span>
-                  </div>
-                );
-              });
-            })()}
           </div>
         </div>
       )}
@@ -810,180 +1169,6 @@ const fetchReplacements = async () => {
         </div>
       </div>
 
-      {/* مودال عملاء الشهر */}
-      {custModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" style={{ direction: "rtl" }}>
-          <div className="bg-white w-full max-w-4xl max-h-[85vh] overflow-y-auto border border-[#888888] shadow-2xl">
-            <div className="flex items-center justify-between p-4 border-b border-[#888888] bg-[#222222] text-[#c3c6bb] sticky top-0 z-10">
-              <h3 className="text-sm font-black">
-                {custModal === "withdrawn" && "عملاء تم الصرف"}
-                {custModal === "later" && "عملاء صرف لاحق"}
-                {custModal === "all" && "إجمالي عملاء الشهر"}
-                <span className="font-mono"> — {selectedMonth}</span>
-              </h3>
-              <button onClick={() => setCustModal(null)} className="cursor-pointer hover:opacity-70"><X size={20} /></button>
-            </div>
-            <div className="p-4">
-              {(() => {
-                const baseList = custModal === "all" ? monthCustomers : monthCustomers.filter((c: any) => c.status === custModal);
-                const cq = custSearch.toLowerCase().trim();
-                const list = !cq ? baseList : baseList.filter((c: any) =>
-                  (c.name || "").toLowerCase().includes(cq) ||
-                  (c.secret_number || "").toLowerCase().includes(cq) ||
-                  (c.phone || "").toLowerCase().includes(cq));
-                if (baseList.length === 0) return <div className="p-6 text-center text-[#555555] font-bold text-xs">لا يوجد عملاء في هذا القسم</div>;
-                if (list.length === 0) return (
-                  <>
-                    <div className="flex flex-wrap items-center gap-2 mb-3 no-print">
-                      <div className="flex items-center gap-1.5 px-2.5 h-8 rounded-md" style={{ background: "var(--bg-input)", border: "1px solid #888888" }}>
-                        <span className="text-[11px] font-black text-[#555555]">تاريخ التقرير:</span>
-                        <span className="text-[11px] font-black font-mono text-[#000000]">{selectedMonth}</span>
-                      </div>
-                      <div className="relative flex-1 min-w-[140px] max-w-[220px]">
-                        <input type="text" value={custSearch} onChange={(e) => setCustSearch(e.target.value)} placeholder="بحث سريع..."
-                          className="w-full h-8 pl-7 pr-2 border rounded-md text-[11px] font-bold focus:outline-none"
-                          style={{ background: "var(--bg-input)", borderColor: "var(--border-strong)", color: "var(--text-primary)" }} />
-                        <div className="absolute inset-y-0 left-0 pl-2 flex items-center pointer-events-none text-[#6b7280]"><Search size={13} strokeWidth={2} /></div>
-                      </div>
-                    </div>
-                    <div className="p-6 text-center text-[#555555] font-bold text-xs">لا توجد نتائج مطابقة للبحث</div>
-                  </>
-                );
-                const sumCard = list.reduce((s: number, c: any) => s + Number(c.card_value || 0), 0);
-                const sumBread = list.reduce((s: number, c: any) => s + Number(c.bread_points || 0), 0);
-                return (
-                  <>
-                  {/* شريط التاريخ + بحث صغير + طباعة */}
-                  <div className="flex flex-wrap items-center gap-2 mb-3 no-print">
-                    <div className="flex items-center gap-1.5 px-2.5 h-8 rounded-md" style={{ background: "var(--bg-input)", border: "1px solid #888888" }}>
-                      <span className="text-[11px] font-black text-[#555555]">تاريخ التقرير:</span>
-                      <span className="text-[11px] font-black font-mono text-[#000000]">{selectedMonth}</span>
-                    </div>
-                    <div className="relative flex-1 min-w-[140px] max-w-[220px]">
-                      <input
-                        type="text"
-                        value={custSearch}
-                        onChange={(e) => setCustSearch(e.target.value)}
-                        placeholder="بحث سريع..."
-                        className="w-full h-8 pl-7 pr-2 border rounded-md text-[11px] font-bold focus:outline-none"
-                        style={{ background: "var(--bg-input)", borderColor: "var(--border-strong)", color: "var(--text-primary)" }}
-                      />
-                      <div className="absolute inset-y-0 left-0 pl-2 flex items-center pointer-events-none text-[#6b7280]">
-                        <Search size={13} strokeWidth={2} />
-                      </div>
-                    </div>
-                    <UnifiedPrintButton printableId="cust-modal-printable" thermalId="cust-modal-printable" title="طباعة" printLayout="wide" />
-                  </div>
-                  <div id="cust-modal-printable">
-                  <div className="grid grid-cols-3 gap-3 mb-3">
-                    <div className="rounded-xl overflow-hidden border shadow-md" style={{ background: "var(--bg-card)", borderColor: "var(--border-strong)" }}>
-                      <div className="px-4 py-3 flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2.5">
-                          <div className="w-9 h-9 rounded-lg flex items-center justify-center" style={{ background: "linear-gradient(135deg,var(--accent),var(--accent-hover))" }}>
-                            <span className="text-[#c3c6bb] font-black text-sm leading-none">👥</span>
-                          </div>
-                          <div className="text-right">
-                            <div className="text-[11px] font-black text-[#555555]">إجمالي العملاء</div>
-                            <div className="text-[10px] text-[#6b7280] font-bold">{selectedMonth}</div>
-                          </div>
-                        </div>
-                        <div className="text-left">
-                          <div className="text-2xl font-black font-mono leading-none text-[#000000]">{list.length}</div>
-                          <div className="text-[10px] font-bold text-[#555555]">عميل</div>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="rounded-xl overflow-hidden border shadow-md" style={{ background: "linear-gradient(135deg,#ecfdf5,#d1fae5)", borderColor: "#059669" }}>
-                      <div className="px-4 py-3 flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2.5">
-                          <div className="w-9 h-9 rounded-lg flex items-center justify-center" style={{ background: "#059669" }}>
-                            <span className="text-white font-black text-sm leading-none">₺</span>
-                          </div>
-                          <div className="text-right">
-                            <div className="text-[11px] font-black text-[#065f46]">إجمالي الدعم المنصرف</div>
-                            <div className="text-[10px] text-[#047857]/70 font-bold">مبلغ البطاقات</div>
-                          </div>
-                        </div>
-                        <div className="text-left">
-                          <div className="text-2xl font-black font-mono leading-none text-[#065f46]">{sumCard.toFixed(2)}</div>
-                          <div className="text-[10px] font-bold text-[#047857]">ج.م</div>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="rounded-xl overflow-hidden border shadow-md" style={{ background: "linear-gradient(135deg,#fff7ed,#ffedd5)", borderColor: "#d97706" }}>
-                      <div className="px-4 py-3 flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2.5">
-                          <div className="w-9 h-9 rounded-lg flex items-center justify-center" style={{ background: "linear-gradient(135deg,#fef3c7,#fde68a)" }}>
-                            <span className="text-[#7c2d12] font-black text-sm leading-none">🍞</span>
-                          </div>
-                          <div className="text-right">
-                            <div className="text-[11px] font-black text-[#9a3412]">إجمالي نقاط الخبز المنصرفه</div>
-                            <div className="text-[10px] text-[#b45309]/70 font-bold">خلال الفترة</div>
-                          </div>
-                        </div>
-                        <div className="text-left">
-                          <div className="text-2xl font-black font-mono leading-none text-[#9a3412]">{sumBread.toFixed(2)}</div>
-                          <div className="text-[10px] font-bold text-[#b45309]">ج.م</div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="rounded-xl overflow-hidden border border-[#e5e7eb] shadow-sm">
-                    <table className="w-full text-right text-xs border-collapse">
-                      <thead>
-                        <tr className="bg-[#222222] text-[#c3c6bb]">
-                          <th className="py-2.5 px-3 font-black border-b-2 border-[#c3c6bb]">#</th>
-                          <th className="py-2.5 px-3 font-black border-b-2 border-[#c3c6bb]">اسم العميل</th>
-                          <th className="py-2.5 px-3 font-black border-b-2 border-[#c3c6bb]">الرقم السري</th>
-                          <th className="py-2.5 px-3 font-black border-b-2 border-[#c3c6bb]">التليفون</th>
-                          <th className="py-2.5 px-3 text-center font-black border-b-2 border-[#c3c6bb]">مبلغ البطاقة</th>
-                          <th className="py-2.5 px-3 text-center font-black border-b-2 border-[#c3c6bb]">نقاط الخبز</th>
-                          <th className="py-2.5 px-3 text-center font-black border-b-2 border-[#c3c6bb]">إجراءات</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {paginate(list, pageModal).map((c: any, i: number) => (
-                          <tr key={c.id} className={i % 2 === 0 ? "bg-white" : "bg-[#f8fafc]"}>
-                            <td className="py-2 px-3 border-b border-[#e5e7eb] text-[#6b7280] font-mono text-[10px]">{(Math.min(pageModal, Math.max(1, Math.ceil(list.length / PAGE_R))) - 1) * PAGE_R + i + 1}</td>
-                            <td className="py-2 px-3 font-bold border-b border-[#e5e7eb] text-[#000000]">{c.name}</td>
-                            <td className="py-2 px-3 font-mono border-b border-[#e5e7eb] text-[#6b7280]">{c.secret_number}</td>
-                            <td className="py-2 px-3 font-mono border-b border-[#e5e7eb] text-[#6b7280]">{c.phone || "—"}</td>
-                            <td className="py-2 px-3 text-center border-b border-[#e5e7eb]">
-                              <span className="inline-block px-2 py-0.5 rounded-md font-mono font-black text-[11px]" style={{ background: "#ecfdf5", color: "#047857", border: "1px solid #a7f3d0" }}>{c.card_value} ج.م</span>
-                            </td>
-                            <td className="py-2 px-3 text-center border-b border-[#e5e7eb]">
-                              <span className="inline-block px-2 py-0.5 rounded-md font-mono font-black text-[11px]" style={{ background: "#fffbeb", color: "#b45309", border: "1px solid #fcd34d" }}>{c.bread_points} ج.م</span>
-                            </td>
-                            <td className="py-2 px-3 text-center border-b border-[#e5e7eb]">
-                              <div className="flex items-center justify-center gap-1">
-                                {c.status === "later" && c.status_month === selectedMonth && (
-                                  <button onClick={() => withdrawRepCustomer(c)} disabled={repWithdrawingId === c.id}
-                                    className="h-7 px-2 bg-[#059669] hover:bg-[#047857] text-white text-[10px] font-bold cursor-pointer disabled:opacity-50 rounded-md shadow-sm" title="صرف الآن">
-                                    {repWithdrawingId === c.id ? "..." : "صرف الآن"}
-                                  </button>
-                                )}
-                                <button onClick={() => openRepHistory(c)}
-                                  className="w-7 h-7 rounded-md text-white cursor-pointer shadow-sm" style={{ background: "#8e44ad" }} title="السجل">▤</button>
-                                <button onClick={() => openRepEdit(c)}
-                                  className="w-7 h-7 rounded-md text-white cursor-pointer shadow-sm" style={{ background: "#2563eb" }} title="تعديل">✎</button>
-                                <button onClick={() => deleteRepCustomer(c.id)}
-                                  className="w-7 h-7 rounded-md text-white cursor-pointer shadow-sm" style={{ background: "#e11d48" }} title="حذف">🗑</button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  {renderPager(list.length, pageModal, setPageModal)}
-                  </div>
-                  </>
-                );
-              })()}
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* مودال تفاصيل المربع */}
       {selectedCard && (
@@ -997,7 +1182,7 @@ const fetchReplacements = async () => {
                 {selectedCard === "remaining" && "تفاصيل المتبقي من الاستعاضات"}
                 {selectedCard === "cards" && "البطاقات المصروفة"}
                 {selectedCard === "bread" && "نقاط الخبز المصروفة"}
-                {selectedCard === "profit" && "تفاصيل صافي الربح"}
+                {selectedCard === "profit" && (profitSrc === "card" ? "تفاصيل صافي الربح بالبطاقة" : "تفاصيل صافي الربح بدون بطاقة")}
                 {selectedCard === "machine" && "مطابقة سمارت"}
                 <span className="font-mono"> — {selectedMonth}</span>
               </h3>
@@ -1037,17 +1222,15 @@ const fetchReplacements = async () => {
                         {machineData?.entries || 0} يوم مُدخل
                       </span>
                     </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 p-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-4">
                       {(() => {
-                        const mt = machineData?.totals || { smartSales: 0, smartSupport: 0, diff: 0, autoDiff: 0 };
+                        const mt = machineData?.totals || { smartSales: 0, smartSupport: 0, diff: 0 };
                         const diff = Number(mt.diff || 0);
-                        const auto = Number(mt.autoDiff || 0);
                         const dTone = (v: number) => (v < 0 ? "var(--danger)" : v > 0 ? "var(--warning)" : "var(--primary)");
                         const tiles = [
                           { k: "sales", label: "إجمالي مبيعات سمارت (يدوي)", value: Number(mt.smartSales || 0), icon: <BarChart3 size={16} strokeWidth={2.25} />, c: "var(--primary)", bg: "rgba(37,99,235,.1)" },
                           { k: "support", label: "قيمة الدعم من سمارت (يدوي)", value: Number(mt.smartSupport || 0), icon: <CreditCard size={16} strokeWidth={2.25} />, c: "var(--series-2)", bg: "rgba(124,58,237,.1)" },
-                          { k: "auto", label: "الفرق المقترح (تلقائي)", value: auto, icon: <Gem size={16} strokeWidth={2.25} />, c: dTone(auto), bg: dTone(auto) === "var(--danger)" ? "rgba(225,29,72,.1)" : dTone(auto) === "var(--warning)" ? "rgba(217,119,6,.1)" : "rgba(37,99,235,.1)" },
-                          { k: "manual", label: "الفرق المُدخل (يدوي)", value: diff, icon: <Eye size={16} strokeWidth={2.25} />, c: dTone(diff), bg: dTone(diff) === "var(--danger)" ? "rgba(225,29,72,.1)" : dTone(diff) === "var(--warning)" ? "rgba(217,119,6,.1)" : "rgba(37,99,235,.1)" },
+                          { k: "diff", label: "الفرق", value: diff, icon: <Gem size={16} strokeWidth={2.25} />, c: dTone(diff), bg: dTone(diff) === "var(--danger)" ? "rgba(225,29,72,.1)" : dTone(diff) === "var(--warning)" ? "rgba(217,119,6,.1)" : "rgba(37,99,235,.1)" },
                         ];
                         return tiles.map((t) => (
                           <div key={t.k} className="rounded-xl p-3.5 border" style={{ background: "var(--bg-input)", borderColor: "var(--border)" }}>
@@ -1088,22 +1271,8 @@ const fetchReplacements = async () => {
                         <input type="number" inputMode="decimal" value={machSupport} onChange={(e) => setMachSupport(e.target.value)} placeholder="0.00" className="w-full h-9 px-2 border rounded-lg text-xs font-mono font-black" style={{ borderColor: "var(--border-strong)", background: "var(--bg-card)" }} />
                       </div>
                       <div className="sm:col-span-4">
-                        <label className="block text-[10px] font-black mb-1 text-[var(--text-secondary)]">الفرق — الخصم من الدعم (يدوي)</label>
-                        <div className="flex gap-1.5">
-                          <input type="number" inputMode="decimal" value={machDiff} onChange={(e) => setMachDiff(e.target.value)} placeholder="0.00" className="flex-1 min-w-0 h-9 px-2 border rounded-lg text-xs font-mono font-black" style={{ borderColor: "var(--border-strong)", background: "var(--bg-card)" }} />
-                          <button
-                            type="button"
-                            onClick={() => setMachDiff(String(machAutoDiff))}
-                            title="نسخ المقترح التلقائي في خانة الفرق"
-                            className="h-9 px-2.5 rounded-lg text-[10px] font-black font-mono shrink-0 cursor-pointer transition-all hover:opacity-80"
-                            style={{ background: "var(--bg-input)", color: "var(--accent)", border: "1px solid var(--border-strong)" }}
-                          >
-                            تلقائي {machAutoDiff < 0 ? "−" : ""}{Math.abs(machAutoDiff).toFixed(2)}
-                          </button>
-                        </div>
-                        <span className="block text-[9px] font-bold mt-1" style={{ color: "var(--text-muted)" }}>
-                          المقترح = الدعم − المبيعات (بيتسجل كمان تلقائي لو سبتها فاضية)
-                        </span>
+                        <label className="block text-[10px] font-black mb-1 text-[var(--text-secondary)]">الفرق — الخصم من الدعم</label>
+                        <input type="number" inputMode="decimal" value={machDiff} onChange={(e) => setMachDiff(e.target.value)} placeholder="0.00" className="w-full h-9 px-2 border rounded-lg text-xs font-mono font-black" style={{ borderColor: "var(--border-strong)", background: "var(--bg-card)" }} />
                       </div>
                       <div className="sm:col-span-8">
                         <label className="block text-[10px] font-black mb-1 text-[var(--text-secondary)]">ملاحظة (اختياري)</label>
@@ -1127,13 +1296,12 @@ const fetchReplacements = async () => {
                         <div className="text-[11px] font-bold mt-1" style={{ color: "var(--text-muted)" }}>ابدأ بإدخال مبيعات سمارت ودعم سمارت من النموذج بالأعلى</div>
                       </div>
                     );
-                    const mt = machineData?.totals || { smartSales: 0, smartSupport: 0, diff: 0, autoDiff: 0 };
+                    const mt = machineData?.totals || { smartSales: 0, smartSupport: 0, diff: 0 };
                     const dTone = (v: number) => (v < 0 ? "var(--danger)" : v > 0 ? "var(--warning)" : "var(--primary)");
                     const cells = [
                       { l: "إجمالي مبيعات سمارت", v: Number(mt.smartSales || 0), c: "var(--primary)" },
                       { l: "إجمالي دعم سمارت", v: Number(mt.smartSupport || 0), c: "var(--series-2)" },
-                      { l: "الفرق المقترح (تلقائي)", v: Number(mt.autoDiff || 0), c: dTone(Number(mt.autoDiff || 0)) },
-                      { l: "الفرق المُدخل (يدوي)", v: Number(mt.diff || 0), c: dTone(Number(mt.diff || 0)) },
+                      { l: "الفرق", v: Number(mt.diff || 0), c: dTone(Number(mt.diff || 0)) },
                     ];
                     return (
                       <div className="rounded-xl border-2 overflow-hidden" style={{ borderColor: "var(--border)", boxShadow: "0 6px 22px rgba(0,0,0,.08)" }}>
@@ -1144,8 +1312,7 @@ const fetchReplacements = async () => {
                               <th className="py-2.5 px-3 font-black">التاريخ</th>
                               <th className="py-2.5 px-3 font-black">مبيعات سمارت (يدوي)</th>
                               <th className="py-2.5 px-3 font-black">دعم سمارت (يدوي)</th>
-                              <th className="py-2.5 px-3 font-black">الفرق (يدوي)</th>
-                              <th className="py-2.5 px-3 font-black">مقترح تلقائي</th>
+                              <th className="py-2.5 px-3 font-black">الفرق</th>
                               <th className="py-2.5 px-3 font-black">ملاحظة</th>
                               <th className="py-2.5 px-3 font-black text-center">إجراء</th>
                             </tr>
@@ -1167,10 +1334,6 @@ const fetchReplacements = async () => {
                                     <span className="inline-block px-2 py-0.5 rounded-md font-mono font-black text-[11px]" style={{ background: tone.bg, color: tone.fg, border: `1px solid ${tone.bd}` }}>
                                       {d.diff > 0 ? "+" : d.diff < 0 ? "−" : ""}{Math.abs(Number(d.diff) || 0).toFixed(2)}
                                     </span>
-                                    {!manual && <span className="block text-[9px] font-bold mt-0.5" style={{ color: "var(--text-muted)" }}>تلقائي</span>}
-                                  </td>
-                                  <td className="py-2 px-3 font-mono font-black" style={{ color: dTone(Number(d.autoDiff || 0)) }}>
-                                    {Number(d.autoDiff || 0) < 0 ? "−" : ""}{Math.abs(Number(d.autoDiff || 0)).toFixed(2)}
                                   </td>
                                   <td className="py-2 px-3 font-bold" style={{ color: "var(--text-secondary)" }}>{d.note || "—"}</td>
                                   <td className="py-2 px-3 text-center whitespace-nowrap">
@@ -1182,7 +1345,7 @@ const fetchReplacements = async () => {
                             })}
                           </tbody>
                         </table>
-                        <div className="grid grid-cols-2 lg:grid-cols-4" style={{ background: "var(--bg-card-hover)", borderTop: "2px solid var(--border-strong)" }}>
+                        <div className="grid grid-cols-3" style={{ background: "var(--bg-card-hover)", borderTop: "2px solid var(--border-strong)" }}>
                           {cells.map((c) => (
                             <div key={c.l} className="px-3 py-2.5 text-center" style={{ borderRight: "1px solid var(--border)" }}>
                               <div className="text-[10px] font-black" style={{ color: "var(--text-secondary)" }}>{c.l}</div>
@@ -1227,6 +1390,42 @@ const fetchReplacements = async () => {
                     </div>
                   ) : (
                   <>
+                  {selectedCard === "profit" && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {([
+                        { k: "card" as const, label: "صافي ربح التموين بالبطاقة", sub: "أصناف تموينية اتباعت بكارت الدعم", accent: "#2563eb" },
+                        { k: "nocard" as const, label: "صافي ربح التموين بدون بطاقة", sub: "أصناف تموينية اتباعت كاش/آجل", accent: "#d97706" },
+                      ]).map((s) => {
+                        const active = profitSrc === s.k;
+                        return (
+                          <button
+                            key={s.k}
+                            onClick={() => { setProfitSrc(s.k); setPageModal(1); }}
+                            title="اضغط لعرض تفاصيل الربح والخسارة"
+                            className="p-3.5 rounded-xl border-2 text-right cursor-pointer transition-all hover:-translate-y-0.5"
+                            style={{ background: active ? `${s.accent}12` : "#ffffff", borderColor: active ? s.accent : "#e5e7eb", boxShadow: active ? `0 6px 18px ${s.accent}33` : "0 1px 2px rgba(0,0,0,.05)" }}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-[12px] font-black leading-snug" style={{ color: active ? s.accent : "#374151" }}>{s.label}</span>
+                              <span
+                                className="text-[9px] font-black px-2 py-0.5 rounded-md shrink-0"
+                                style={active ? { background: s.accent, color: "#fff" } : { background: "#f3f4f6", color: "#6b7280", border: "1px solid #e5e7eb" }}
+                              >
+                                {active ? "مفعّل" : "افتح"}
+                              </span>
+                            </div>
+                            <div className="text-[10px] font-bold mt-0.5" style={{ color: "#6b7280" }}>{s.sub}</div>
+                            <div className="flex items-baseline gap-1.5 mt-1.5">
+                              <span className="text-[22px] font-black font-mono leading-none" style={{ color: s.accent }}>
+                                {netOf(s.k) < 0 ? "−" : ""}{Math.abs(netOf(s.k)).toFixed(2)}
+                              </span>
+                              <span className="text-[11px] font-black" style={{ color: "#6b7280" }}>ج.م</span>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                   <div className="rounded-xl overflow-hidden border border-[#222222]" style={{ background: "var(--bg-card)" }}>
                     <div className="px-5 py-4 flex items-center justify-between gap-4">
                       <div className="flex items-center gap-3">
@@ -1234,14 +1433,14 @@ const fetchReplacements = async () => {
                           <span className="text-[#c3c6bb] font-black text-xl leading-none">₺</span>
                         </div>
                         <div className="text-right">
-                          <div className="text-[11px] font-black text-[#555555] tracking-wide">{selectedCard === "profit" ? "صافي ربح التموين الفعلي" : "إجمالي مبيعات الدعم"}</div>
+                          <div className="text-[11px] font-black text-[#555555] tracking-wide">{selectedCard === "profit" ? (profitSrc === "card" ? "صافي ربح التموين بالبطاقة" : "صافي ربح التموين بدون بطاقة") : "إجمالي مبيعات الدعم"}</div>
                           <div className="text-[10px] text-[#6b7280] font-bold">{selectedMonth}</div>
                         </div>
                       </div>
                       <div className="text-left">
                         <div className="text-3xl font-black font-mono leading-none text-[#000000]">
                           {selectedCard === "profit"
-                            ? (((cardDetails?.salesItems) || []).reduce((s: number, it: any) => s + Number(it.profit || 0), 0)).toFixed(2)
+                            ? profitNet.toFixed(2)
                             : (((cardDetails?.salesItems) || []).reduce((s: number, it: any) => s + Number(it.total || 0), 0)).toFixed(2)}
                         </div>
                         <div className="text-[11px] font-bold text-[#555555] mt-0.5">جنيه مصري</div>
@@ -1256,7 +1455,7 @@ const fetchReplacements = async () => {
                           <span className="text-[11px] font-black text-[#047857]">قيمة الربح</span>
                         </div>
                         <span className="text-xl font-black font-mono text-[#047857] leading-none">
-                          {((cardDetails?.salesItems || []).filter((it: any) => Number(it.profit || 0) > 0).reduce((s: number, it: any) => s + Number(it.profit || 0), 0)).toFixed(2)}
+                          {profitGain.toFixed(2)}
                         </span>
                       </div>
                       <div className="rounded-xl px-4 py-3 flex items-center justify-between gap-2 border-2 shadow-md" style={{ background: "linear-gradient(135deg,#fff1f2,#ffe4e6)", borderColor: "#e11d48", boxShadow: "0 0 16px rgba(225,29,72,.25)" }}>
@@ -1265,7 +1464,7 @@ const fetchReplacements = async () => {
                           <span className="text-[11px] font-black text-[#e11d48]">قيمة الخسارة</span>
                         </div>
                         <span className="text-xl font-black font-mono text-[#e11d48] leading-none" style={{ textShadow: "0 0 12px rgba(225,29,72,.35)" }}>
-                          {((cardDetails?.salesItems || []).filter((it: any) => Number(it.profit || 0) < 0).reduce((s: number, it: any) => s + Number(it.profit || 0), 0)).toFixed(2)}
+                          {profitLoss.toFixed(2)}
                         </span>
                       </div>
                       <div className="rounded-xl px-4 py-3 flex items-center justify-between gap-2 border" style={{ background: "#d1fae5", borderColor: "#059669" }}>
@@ -1274,7 +1473,7 @@ const fetchReplacements = async () => {
                           <span className="text-[11px] font-black text-[#065f46]">الصافي</span>
                         </div>
                         <span className="text-xl font-black font-mono text-[#065f46] leading-none">
-                          {((cardDetails?.salesItems) || []).reduce((s: number, it: any) => s + Number(it.profit || 0), 0).toFixed(2)}
+                          {profitNet.toFixed(2)}
                         </span>
                       </div>
                     </div>
@@ -1699,7 +1898,7 @@ const fetchReplacements = async () => {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-bold mb-1">مبلغ البطاقة</label>
-                <input type="number" value={repForm.card_value || ""} onChange={(e) => setRepForm({ ...repForm, card_value: Number(e.target.value) || 0 })}
+                <input type="number" step="1" min="1" value={repForm.card_value || ""} onChange={(e) => setRepForm({ ...repForm, card_value: Number(e.target.value) || 0 })}
                   className="w-full h-9 bg-[#b8bcb2] border border-[#888888] px-3 text-xs font-bold" />
               </div>
               <div>
@@ -1711,6 +1910,169 @@ const fetchReplacements = async () => {
             <div className="flex gap-2">
               <button onClick={saveRepEdit} className="h-10 px-6 bg-[#27ae60] hover:bg-[#219a52] text-white font-black text-xs cursor-pointer">حفظ التعديلات</button>
               <button onClick={() => setRepEditCustomer(null)} className="h-10 px-6 bg-[#888888] hover:bg-[#666666] text-white font-black text-xs cursor-pointer">إلغاء</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== نافذة عرض أصناف الفاتورة (زرار 👁) ===== */}
+      {invView && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4" style={{ direction: "rtl" }} onClick={() => { setInvView(null); setInvMsg(""); }}>
+          <div className="w-full max-w-2xl max-h-[85vh] overflow-hidden border shadow-2xl flex flex-col" style={{ borderColor: "#888888", background: "var(--bg-card)" }} onClick={(e) => e.stopPropagation()}>
+            <div className="px-4 py-3 flex items-center justify-between gap-2 flex-wrap shrink-0" style={{ background: "#222222", borderBottom: "2px solid #888888" }}>
+              <span className="text-[13px] font-black" style={{ color: "#c3c6bb" }}>
+                أصناف الفاتورة {invView.invoice_number}
+                <span className="font-mono text-[10px] font-bold mr-2 px-1.5 py-0.5 rounded" style={{ background: "rgba(255,255,255,.12)", border: "1px solid rgba(255,255,255,.2)" }}>{invView.date}</span>
+              </span>
+              <button onClick={() => { setInvView(null); setInvMsg(""); }} className="text-[12px] font-black cursor-pointer hover:opacity-70" style={{ color: "#c3c6bb" }}>إغلاق ✕</button>
+            </div>
+            <div className="overflow-auto flex-1">
+              <div className="px-4 pt-3 grid grid-cols-3 gap-2">
+                {[
+                  { l: "العميل", v: invView.customer_supplier_name || "—", c: "var(--text-primary)" },
+                  { l: "إجمالي الفاتورة", v: `${Number(invView.total || 0).toFixed(2)} ج.م`, c: "#2563eb" },
+                  { l: invView.tamween_discount > 0 ? "خصم التموين" : invView.bread_points > 0 ? "نقاط الخبز" : "المدفوع",
+                    v: `${Number(invView.tamween_discount > 0 ? invView.tamween_discount : invView.bread_points > 0 ? invView.bread_points : invView.paid || 0).toFixed(2)} ج.م`,
+                    c: invView.tamween_discount > 0 ? "#d97706" : invView.bread_points > 0 ? "#059669" : "#2563eb" },
+                ].map((s) => (
+                  <div key={s.l} className="rounded-xl p-2.5 text-center" style={{ background: "var(--bg-card-hover)", border: "1px solid var(--border)" }}>
+                    <div className="text-[10px] font-black mb-1" style={{ color: "var(--text-muted)" }}>{s.l}</div>
+                    <div className="font-mono font-black text-[13px]" style={{ color: s.c }}>{s.v}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="p-4">
+                {invMsg && <div className="mb-2 text-[11px] font-black" style={{ color: "#e11d48" }}>{invMsg}</div>}
+                {invViewLoading ? (
+                  <div className="py-7 text-center text-[12px] font-black" style={{ color: "var(--text-muted)" }}>جارٍ التحميل...</div>
+                ) : invViewItems.length === 0 ? (
+                  <div className="py-7 text-center text-[12px] font-black" style={{ color: "var(--text-muted)" }}>مفيش أصناف مسجّلة على الفاتورة دي</div>
+                ) : (
+                  <table className="w-full text-right text-xs border-collapse">
+                    <thead>
+                      <tr style={{ background: "var(--bg-card-hover)", color: "var(--text-primary)" }}>
+                        <th className="py-2 px-3 font-black">#</th>
+                        <th className="py-2 px-3 font-black">الباركود</th>
+                        <th className="py-2 px-3 font-black">الصنف</th>
+                        <th className="py-2 px-3 font-black text-center">الكمية</th>
+                        <th className="py-2 px-3 font-black text-center">السعر</th>
+                        <th className="py-2 px-3 font-black text-center">الإجمالي</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {invViewItems.map((it: any, i: number) => (
+                        <tr key={it.id ?? i} style={{ background: i % 2 ? "var(--bg-card-hover)" : "var(--bg-card)" }}>
+                          <td className="py-2 px-3 font-mono font-black" style={{ color: "var(--text-muted)" }}>{i + 1}</td>
+                          <td className="py-2 px-3 font-mono" style={{ color: "var(--text-secondary)" }}>{it.barcode || "—"}</td>
+                          <td className="py-2 px-3 font-bold" style={{ color: "var(--text-primary)" }}>{it.name}</td>
+                          <td className="py-2 px-3 text-center font-mono font-black">{it.quantity} {it.unit || ""}</td>
+                          <td className="py-2 px-3 text-center font-mono font-black">{Number(it.price || 0).toFixed(2)}</td>
+                          <td className="py-2 px-3 text-center font-mono font-black" style={{ color: "#d97706" }}>{Number(it.total || 0).toFixed(2)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr style={{ background: "var(--bg-input)", borderTop: "2px solid var(--border-strong)" }}>
+                        <td className="py-2 px-3 font-black" colSpan={5} style={{ color: "var(--text-secondary)" }}>إجمالي {invViewItems.length} صنف</td>
+                        <td className="py-2 px-3 font-mono font-black text-center" style={{ color: "#d97706" }}>
+                          {invViewItems.reduce((s: number, it: any) => s + Number(it.total || 0), 0).toFixed(2)}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== نافذة تعديل الفاتورة (زرار ✎) ===== */}
+      {invEdit && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4" style={{ direction: "rtl" }} onClick={() => { if (!invBusy) { setInvEdit(null); setInvMsg(""); } }}>
+          <div className="w-full max-w-lg overflow-hidden border shadow-2xl" style={{ borderColor: "#888888", background: "var(--bg-card)" }} onClick={(e) => e.stopPropagation()}>
+            <div className="px-4 py-3 flex items-center justify-between gap-2 shrink-0" style={{ background: "#222222", borderBottom: "2px solid #888888" }}>
+              <span className="text-[13px] font-black" style={{ color: "#c3c6bb" }}>تعديل الفاتورة {invEdit.invoice_number}</span>
+              <button onClick={() => { setInvEdit(null); setInvMsg(""); }} className="text-[12px] font-black cursor-pointer hover:opacity-70" style={{ color: "#c3c6bb" }}>إغلاق ✕</button>
+            </div>
+            <div className="p-4 space-y-3">
+              <label className="block">
+                <span className="block text-[11px] font-black mb-1" style={{ color: "var(--text-muted)" }}>اسم العميل / الجهة</span>
+                <input type="text" value={invEditForm.customer_supplier_name} onChange={(e) => setInvEditForm({ ...invEditForm, customer_supplier_name: e.target.value })}
+                  className="w-full h-9 px-3 rounded-lg text-xs font-bold" style={{ background: "var(--bg-input)", color: "var(--text-primary)", border: "1px solid var(--border)" }} />
+              </label>
+              <div>
+                <span className="block text-[11px] font-black mb-1" style={{ color: "var(--text-muted)" }}>المصدر المالي</span>
+                <div className="grid grid-cols-2 gap-2">
+                  {[{ k: "cash_register", l: "درج الكاشير" }, { k: "main_safe", l: "الخزنة الرئيسية" }].map((o) => (
+                    <button key={o.k} type="button" onClick={() => setInvEditForm({ ...invEditForm, payment_source: o.k })}
+                      className="h-9 rounded-lg text-[12px] font-black cursor-pointer transition-all"
+                      style={{ background: invEditForm.payment_source === o.k ? "#222222" : "var(--bg-input)", color: invEditForm.payment_source === o.k ? "#c3c6bb" : "var(--text-secondary)", border: "1px solid var(--border)" }}>
+                      {o.l}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block">
+                  <span className="block text-[11px] font-black mb-1" style={{ color: "var(--text-muted)" }}>المدفوع (ج.م)</span>
+                  <input type="number" step="0.01" value={invEditForm.paid} onChange={(e) => setInvEditForm({ ...invEditForm, paid: Number(e.target.value) || 0 })}
+                    className="w-full h-9 px-3 rounded-lg text-xs font-bold font-mono" style={{ background: "var(--bg-input)", color: "var(--text-primary)", border: "1px solid var(--border)" }} />
+                </label>
+                <label className="block">
+                  <span className="block text-[11px] font-black mb-1" style={{ color: "var(--text-muted)" }}>المتبقي (ج.م)</span>
+                  <input type="number" step="0.01" value={invEditForm.remaining} onChange={(e) => setInvEditForm({ ...invEditForm, remaining: Number(e.target.value) || 0 })}
+                    className="w-full h-9 px-3 rounded-lg text-xs font-bold font-mono" style={{ background: "var(--bg-input)", color: "var(--text-primary)", border: "1px solid var(--border)" }} />
+                </label>
+              </div>
+              <div className="text-[10px] font-bold leading-relaxed" style={{ color: "var(--text-muted)" }}>
+                أي تغيير في «المدفوع» هيسجّل حركة خزنة تلقائيًا، وعندما يُسجَّل في سجل أمني باسم المستخدم.
+              </div>
+              {invMsg && <div className="text-[11px] font-black" style={{ color: "#e11d48" }}>{invMsg}</div>}
+              <div className="flex gap-2">
+                <button onClick={saveInvEdit} disabled={invBusy}
+                  className="h-10 px-6 bg-[#27ae60] hover:bg-[#219a52] text-white font-black text-xs cursor-pointer disabled:opacity-50">
+                  {invBusy ? "جارٍ الحفظ..." : "حفظ التعديلات"}
+                </button>
+                <button onClick={() => { setInvEdit(null); setInvMsg(""); }} disabled={invBusy}
+                  className="h-10 px-6 bg-[#888888] hover:bg-[#666666] text-white font-black text-xs cursor-pointer disabled:opacity-50">
+                  إلغاء
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== نافذة تأكيد حذف الفاتورة (زرار 🗑) ===== */}
+      {invDelete && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4" style={{ direction: "rtl" }} onClick={() => { if (!invBusy) { setInvDelete(null); setInvMsg(""); } }}>
+          <div className="w-full max-w-md overflow-hidden border shadow-2xl" style={{ borderColor: "#888888", background: "var(--bg-card)" }} onClick={(e) => e.stopPropagation()}>
+            <div className="px-4 py-3 flex items-center justify-between gap-2 shrink-0" style={{ background: "#7f1d1d", borderBottom: "2px solid #888888" }}>
+              <span className="text-[13px] font-black text-white">⚠ تأكيد حذف الفاتورة</span>
+              <button onClick={() => { setInvDelete(null); setInvMsg(""); }} className="text-[12px] font-black text-white cursor-pointer hover:opacity-70">إغلاق ✕</button>
+            </div>
+            <div className="p-4 space-y-3">
+              <div className="rounded-lg p-3 text-xs font-bold space-y-1" style={{ background: "var(--bg-card-hover)", border: "1px solid var(--border)" }}>
+                <div className="flex justify-between"><span style={{ color: "var(--text-muted)" }}>الفاتورة:</span><span className="font-mono">{invDelete.invoice_number}</span></div>
+                <div className="flex justify-between"><span style={{ color: "var(--text-muted)" }}>التاريخ:</span><span className="font-mono">{invDelete.date}</span></div>
+                <div className="flex justify-between"><span style={{ color: "var(--text-muted)" }}>العميل:</span><span>{invDelete.customer_supplier_name || "—"}</span></div>
+                <div className="flex justify-between"><span style={{ color: "var(--text-muted)" }}>الإجمالي:</span><span className="font-mono font-black">{Number(invDelete.total || 0).toFixed(2)} ج.م</span></div>
+              </div>
+              <div className="text-[11px] font-black leading-relaxed" style={{ color: "#e11d48" }}>
+                الحذف هيرجّع كميات الأصناف للمخزن، ويسجّل عملية في السجل الأمني باسمك. لا يمكن التراجع عن العملية.
+              </div>
+              {invMsg && <div className="text-[11px] font-black" style={{ color: "#e11d48" }}>{invMsg}</div>}
+              <div className="flex gap-2">
+                <button onClick={deleteInvoiceNow} disabled={invBusy}
+                  className="h-10 px-6 bg-red-600 hover:bg-red-700 text-white font-black text-xs cursor-pointer disabled:opacity-50">
+                  {invBusy ? "جارٍ الحذف..." : "نعم، احذف الفاتورة"}
+                </button>
+                <button onClick={() => { setInvDelete(null); setInvMsg(""); }} disabled={invBusy}
+                  className="h-10 px-6 bg-[#888888] hover:bg-[#666666] text-white font-black text-xs cursor-pointer disabled:opacity-50">
+                  إلغاء
+                </button>
+              </div>
             </div>
           </div>
         </div>
